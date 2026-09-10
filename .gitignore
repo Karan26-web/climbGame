@@ -1,0 +1,53 @@
+# macOS
+.DS_Store
+.DS_Store?
+.AppleDouble
+.LSOverride
+._*
+
+# Windows / Linux desktop cruft
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.directory
+
+# Editors and IDEs
+.vscode/
+.idea/
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# Python — tools/build_assets.py, tools/composite_test.py
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.mypy_cache/
+.pytest_cache/
+
+# Node — tools/sim_test.js runs under plain node, but keep deps out if any land
+node_modules/
+npm-debug.log*
+yarn-error.log*
+.npm/
+
+# Logs and scratch output
+*.log
+/tmp/
+*.tmp
+
+# Local test harnesses. During development the game is copied to an underscore-
+# prefixed file with a probe script appended (screen states, benchmarks, error
+# capture) and driven by headless Chrome. Those copies are disposable.
+_*.html
+
+# Screenshots and captures taken while testing, if dropped in the repo root
+/*.screenshot.png
+/shot*.png
+
+# NOTE: assets/ is deliberately NOT ignored. The .webp files in it are the
+# game's content — index.html loads them at runtime and the game cannot run
+# without them. They are only ~1.2 MB in total, so they belong in the repo.

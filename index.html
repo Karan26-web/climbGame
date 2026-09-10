@@ -1,0 +1,2075 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#4FC3F7">
+<title>Climb Game</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%; overflow: hidden;
+    background: #1b1410; color: #ECEFF1;
+    font-family: "Nunito", "Baloo 2", "Trebuchet MS", "Avenir Next", system-ui, sans-serif;
+    -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
+    touch-action: none; overscroll-behavior: none;
+  }
+  #c { display: block; width: 100%; height: 100%; touch-action: none; }
+  #boot {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 18px;
+    background: linear-gradient(#4FC3F7, #0288D1); z-index: 10;
+    transition: opacity .45s ease; font-weight: 800; letter-spacing: .06em;
+  }
+  #boot.gone { opacity: 0; pointer-events: none; }
+  #bar { width: min(60vw, 320px); height: 14px; border-radius: 99px;
+         background: rgba(43,33,24,.35); overflow: hidden;
+         box-shadow: inset 0 2px 6px rgba(43,33,24,.4); }
+  #fill { height: 100%; width: 0%; border-radius: 99px;
+          background: linear-gradient(#FFD54F, #FFA000); transition: width .2s ease; }
+  #boot h1 { margin: 0; font-size: clamp(28px, 7vw, 54px); text-shadow: 0 3px 0 #2B2118; }
+  #boot p { margin: 0; font-size: 14px; opacity: .85; text-shadow: 0 2px 0 rgba(43,33,24,.5); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="boot">
+  <h1>CLIMB</h1>
+  <div id="bar"><div id="fill"></div></div>
+  <p id="bootmsg">loading art&hellip;</p>
+</div>
+<script>
+/* =====================================================================
+   CLIMB — a side-scrolling physics climber.
+   Single file by design: open index.html directly, no server needed.
+
+   Layout of this script:
+     PHYSICS-CORE   maths, procedural terrain, vehicle dynamics  (headless-
+                    testable: tools/sim_test.js extracts this block verbatim
+                    and runs it under Node, so it must not touch the DOM)
+     ASSETS         image loading
+     AUDIO          WebAudio engine/tyre/pickup synthesis, no audio files
+     WORLD          deterministic chunked props, pickups, particles
+     RENDER         parallax, terrain ribbon, vehicle assembly, HUD
+     GAME           loop, camera, input, screens
+   ===================================================================== */
+
+/* ============================ PHYSICS-CORE-START ============================ */
+/* Shared math + small helpers. No DOM access — this file must run under Node
+   so the physics can be validated headlessly (see tools/sim_test.js). */
+var CG = globalThis.CG = globalThis.CG || {};
+
+CG.TAU = Math.PI * 2;
+
+CG.clamp = function (v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; };
+CG.lerp = function (a, b, t) { return a + (b - a) * t; };
+CG.smoothstep = function (e0, e1, x) {
+  var t = CG.clamp((x - e0) / (e1 - e0), 0, 1);
+  return t * t * (3 - 2 * t);
+};
+CG.sign = function (v) { return v < 0 ? -1 : v > 0 ? 1 : 0; };
+CG.approach = function (cur, target, rate, dt) {
+  // frame-rate independent exponential approach
+  return target + (cur - target) * Math.exp(-rate * dt);
+};
+
+/* Deterministic hash noise — the terrain is a pure function of x, so the track
+   is infinite and needs no stored heightmap. */
+CG.hash1 = function (i, seed) {
+  // Math.imul, not `*`: plain multiplication of two 32-bit ints exceeds 2^53,
+  // silently loses the low bits and leaves the hash badly non-uniform.
+  var h = (Math.imul(i | 0, 374761393) + Math.imul(seed | 0, 668265263)) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h = h ^ (h >>> 16);
+  return (h >>> 0) / 4294967296;
+};
+
+/* Value noise with smoothstep interpolation: C1 continuous, so the terrain has
+   no slope discontinuities for the wheels to catch on. */
+CG.vnoise = function (x, seed) {
+  var i = Math.floor(x), f = x - i;
+  var a = CG.hash1(i, seed), b = CG.hash1(i + 1, seed);
+  return a + (b - a) * (f * f * (3 - 2 * f));
+};
+
+/* Seeded RNG for world decoration (props, pickups) — mulberry32. */
+CG.rng = function (seed) {
+  var s = seed >>> 0;
+  return function () {
+    s = (s + 0x6D2B79F5) >>> 0;
+    var t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+};
+
+CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
+
+/* Infinite procedural terrain.
+   The surface is a PURE FUNCTION of x — nothing is stored, so the track is
+   endless, deterministic per seed, and identical on every replay of that seed. */
+(function (CG) {
+  'use strict';
+
+  CG.PPM = 50;          // pixels per metre (world scale, per the art brief)
+  CG.BASE_Y = 300;      // surface y at the start line (y grows downward)
+
+  var FEAT_SPACING = 1700;
+
+  var Terrain = CG.Terrain = {
+    seed: 1,
+
+    setSeed: function (s) { this.seed = (s | 0) || 1; },
+
+    /* Sparse launch ramps / big rollers, laid down on top of the noise so the
+       track has deliberate jumps instead of only rolling hills. */
+    features: function (x) {
+      var sum = 0, sd = this.seed * 7919;
+      var k0 = Math.floor(x / FEAT_SPACING) - 1;
+      for (var k = k0; k <= k0 + 2; k++) {
+        if (k < 1) continue;
+        var r1 = CG.hash1(k, 901 + sd), r2 = CG.hash1(k, 902 + sd), r3 = CG.hash1(k, 903 + sd);
+        if (r1 < 0.42) continue;
+        var cx = k * FEAT_SPACING + r2 * 1100;
+        var w = 100 + r3 * 110;
+        var t = (x - cx) / w;
+        if (t < -3.5 || t > 5) continue;
+        var amp = 30 + r1 * 80;
+        sum += amp * Math.exp(-t * t);
+        // A third of them are kickers: the ramp is followed by a dip, so the
+        // ground falls away at the crest instead of catching the car again.
+        if (r1 > 0.72) sum -= amp * 0.55 * Math.exp(-(t - 1.9) * (t - 1.9));
+      }
+      return sum;
+    },
+
+    /* Height above the base line. Grows rougher with distance. */
+    elevation: function (x) {
+      var sd = this.seed * 7919;
+      var diff = 1 - Math.exp(-Math.max(0, x) / 7000);   // 0 -> 1 difficulty ramp
+      var h = 0;
+      // Difficulty rides mainly on the LONG wavelengths: that buys tall climbs
+      // without creating walls the car physically cannot get up.
+      // Amplitudes are chosen from the slope each octave contributes
+      // (d/dx of smoothstep value noise ~= 0.5 * amp / wavelength).
+      h += CG.vnoise(x / 1600, 11 + sd) * (128 + 320 * diff);
+      h += CG.vnoise(x / 900, 23 + sd) * (100 + 102 * diff);
+      h += CG.vnoise(x / 380, 37 + sd) * (48 + 24 * diff);
+      h += CG.vnoise(x / 165, 53 + sd) * (14 + 7 * diff);
+      h += CG.vnoise(x / 72, 67 + sd) * (3 + 2 * diff);
+      h += this.features(x) * (0.45 + 0.55 * diff);
+      return h;
+    },
+
+    /* Surface y in world space. The first 900px are flattened to the start
+       height so the player always begins on level ground. */
+    y: function (x) {
+      var h = this.elevation(x);
+      var s = CG.smoothstep(120, 1000, x);
+      if (s < 1) h = CG.lerp(this.elevation(0), h, s);
+      return CG.BASE_Y - h;
+    },
+
+    /* Surface point, slope and up-normal at x. */
+    sample: function (x, out) {
+      out = out || {};
+      var d = 1.5;
+      var y = this.y(x);
+      var m = (this.y(x + d) - this.y(x - d)) / (2 * d);   // dy/dx
+      var L = Math.sqrt(1 + m * m);
+      out.x = x; out.y = y; out.m = m;
+      out.nx = m / L; out.ny = -1 / L;      // unit normal, points up (-y)
+      out.tx = 1 / L; out.ty = m / L;       // unit tangent, points +x
+      out.ang = Math.atan2(m, 1);
+      return out;
+    }
+  };
+})(CG);
+
+/* Vehicle physics: rigid chassis + two wheels on kinematic suspension with a
+   slip-based tyre model. DOM-free so tools/sim_test.js can validate it.
+
+   Model, per substep:
+     1. each wheel's suspension travel is solved from the terrain (a hard
+        constraint), which sets the spring compression
+     2. compression + damping gives the normal force N, applied along the
+        terrain normal at the contact patch
+     3. longitudinal force = clamp(C_SLIP * slip, +/- MU*N), where
+        slip = omega*R - v_tangent. This is what produces wheelspin, skids,
+        and the torque about the centre of mass that lifts the nose.
+     4. chassis hull points get a stiff penalty spring so the body can't sink
+   Local space: origin at the centre of mass, +x forward, +y down.           */
+(function (CG) {
+  'use strict';
+
+  /* ---- art-space -> local-space mapping (numbers from ASSET_AUDIT.md) ---- */
+  var WHEELBASE = 130;                    // world px between the axles
+  var ART = WHEELBASE / 901;              // jeep_body art px -> world px
+  var AXLE_MID_X = 863.5, AXLE_Y = 598;   // axle line in jeep_body art px
+  var COM_ABOVE_AXLE = 18;                // centre of mass sits above the axles
+  var COM_FORWARD = 12;                   // ...and ahead of the axle midpoint.
+  var RIDE = 17;                          // body art sits this far ABOVE the
+  // axle line. The art's wheel arches are proportionally small (see
+  // ASSET_AUDIT.md), so without ride height the tyres disappear up inside the
+  // bodywork. Lifting the body — not the axles — exposes the lower half of the
+  // tyre and moves the collision hull up with it.
+  // COM_FORWARD is a handling knob: moving mass forward lengthens gravity's
+  // restoring arm about the rear contact, which is what stops full throttle
+  // from backflipping the car on a climb. At +12 it holds to ~38 degrees.
+
+  function L(ax, ay) {
+    return { x: (ax - AXLE_MID_X) * ART - COM_FORWARD,
+             y: (ay - AXLE_Y) * ART + COM_ABOVE_AXLE - RIDE };
+  }
+  /* Axle anchors bypass the ride lift: the wheels stay on the measured axle
+     line while the body rises above them. */
+  function AX(ax) {
+    return { x: (ax - AXLE_MID_X) * ART - COM_FORWARD, y: COM_ABOVE_AXLE };
+  }
+
+  var V = CG.VConst = {
+    ART: ART,
+    WHEELBASE: WHEELBASE,
+    WHEEL_R: 30,
+    MASS: 1,
+    INERTIA: (240 * 240 + 105 * 105) / 12,   // 5719, from the body's bounding box
+    GRAV: 1400,
+
+    SUS_TRAVEL: 20,
+    SUS_K: 90,                 // force per px of compression (mass == 1)
+    SUS_C: 9,                  // damper
+    N_MAX: 9000,               // impact clamp, keeps landings from exploding
+
+    WHEEL_I: 435,              // spin inertia incl. reflected drivetrain inertia
+    MU: 1.15,                  // tyre friction coefficient
+    C_SLIP: 45,                // force per px/s of slip before saturation
+    ROLL_RES: 0.018,
+
+    T_STALL: 30000,            // max wheel torque (grip/gearing limited)
+    W_IDLE: 9.5,               // omega below which torque is stall-limited
+    W_REDLINE: 42,             // rev limiter; without it airborne wheels run away
+    SPIN_DRAG: 8,              // free-spin drag on an airborne wheel
+    T_BRAKE: 39000,
+    REVERSE: 0.62,             // reverse is weaker than forward
+    DRIVE_REAR: 0.5,           // torque split
+    BOOST_MUL: 1.55,
+
+    AIR_DRAG: 0.00022,
+    AV_DAMP: 0.5,
+    AIR_TORQUE: 5719 * 6.5,    // in-air pitch control
+
+    /* draw + collision geometry, all derived from the audited mount points */
+    axleRear: AX(413),
+    axleFront: AX(1314),
+    seat: L(700, 470),
+    neck: L(713, 372.7),
+    exhaust: L(86, 530),
+    bodyOrigin: L(0, 0),                   // where the jeep_body image (0,0) lands
+    bodyW: (1730 - 63) * ART,
+    bodyH: (755 - 49) * ART,
+    hull: [L(1700, 745), L(1700, 330), L(1520, 250), L(1180, 130),
+           L(1130, 70), L(330, 60), L(140, 330), L(110, 700),
+           L(450, 762), L(1250, 762)]
+  };
+  /* Power limit: torque = P_MAX / omega above W_IDLE. P = torque * omega, so
+     P_MAX must equal T_STALL * W_IDLE or the curve never engages. */
+  V.P_MAX = V.T_STALL * V.W_IDLE;
+  V.headR = 11;
+  V.head = { x: V.neck.x, y: V.neck.y - 14 };
+  /* Suspension anchors: placed so that at rest sag the wheel centre lands
+     exactly on the axle line. */
+  /* Static load is not 50/50 once the COM moves forward, so each corner gets
+     its own sag and its own anchor height — both wheel centres must still land
+     exactly on the axle line at rest. */
+  V.shareRear = (0 - V.axleFront.x) / (V.axleRear.x - V.axleFront.x);
+  V.shareFront = 1 - V.shareRear;
+  V.sagRear = V.SUS_TRAVEL - (V.GRAV * V.MASS * V.shareRear) / V.SUS_K;
+  V.sagFront = V.SUS_TRAVEL - (V.GRAV * V.MASS * V.shareFront) / V.SUS_K;
+  V.axleRear.y -= V.sagRear;
+  V.axleFront.y -= V.sagFront;
+
+  var surf = {}, surf2 = {};
+  function sp0(v) { return Math.sqrt(v.vx * v.vx + v.vy * v.vy); }
+
+  function Vehicle(terrain) {
+    this.t = terrain || CG.Terrain;
+    this.wheels = [
+      { ax: V.axleRear.x, ay: V.axleRear.y, drive: V.DRIVE_REAR, sag: V.sagRear },
+      { ax: V.axleFront.x, ay: V.axleFront.y, drive: 1 - V.DRIVE_REAR, sag: V.sagFront }
+    ];
+    this.reset(0);
+  }
+  CG.Vehicle = Vehicle;
+
+  Vehicle.prototype.reset = function (x) {
+    /* Start settled on the surface, aligned to it — not dropped from a height. */
+    var g = this.t.sample(x);
+    this.a = g.ang; this.av = 0;
+    this.ca = Math.cos(this.a); this.sa = Math.sin(this.a);
+    this.x = x - g.nx * (V.WHEEL_R + COM_ABOVE_AXLE);
+    this.y = g.y + g.ny * (V.WHEEL_R + COM_ABOVE_AXLE);
+    this.vx = 0; this.vy = 0;
+    for (var i = 0; i < 2; i++) {
+      var w = this.wheels[i];
+      w.s = w.sag; w.sv = 0; w.omega = 0;
+      w.contact = false; w.N = 0; w.slip = 0; w.skid = 0;
+      w.px = x; w.py = this.y; w.cpx = x; w.cpy = this.y;
+      w.nx = 0; w.ny = -1;
+    }
+    this.onGround = false; this.airTime = 0; this.groundTime = 0;
+    this.spin = 0; this.spinArmed = false;
+    this.crashed = false; this.crashReason = '';
+    this.scrape = 0; this.impact = 0; this.upsideTime = 0;
+    this.rpm = 0; this.engineLoad = 0;
+    this.ca = 1; this.sa = 0;
+  };
+
+  Vehicle.prototype.toWorld = function (lx, ly, out) {
+    out = out || {};
+    out.x = this.x + lx * this.ca - ly * this.sa;
+    out.y = this.y + lx * this.sa + ly * this.ca;
+    return out;
+  };
+
+  /* Forward speed along the chassis axis, in px/s. */
+  Vehicle.prototype.forwardSpeed = function () {
+    return this.vx * this.ca + this.vy * this.sa;
+  };
+
+  Vehicle.prototype.step = function (dt, input) {
+    var i, w;
+    var gas = input.gas || 0, brake = input.brake || 0;
+    var drive = gas - brake * V.REVERSE;
+    var boost = input.boost ? V.BOOST_MUL : 1;
+
+    this.ca = Math.cos(this.a); this.sa = Math.sin(this.a);
+    var dnx = -this.sa, dny = this.ca;      // chassis "down" axis in world space
+
+    var fx = 0, fy = V.GRAV * V.MASS, tq = 0;
+    var contacts = 0;
+    this.impact = 0;
+
+    /* ------------------------------------------------------------- wheels */
+    for (i = 0; i < 2; i++) {
+      w = this.wheels[i];
+      var anx = this.x + w.ax * this.ca - w.ay * this.sa;
+      var any = this.y + w.ax * this.sa + w.ay * this.ca;
+
+      /* free suspension extension when unloaded */
+      var sFree = w.s + w.sv * dt;
+      var accS = (V.SUS_K * (V.SUS_TRAVEL - w.s)) / 0.5 + V.GRAV * this.ca - V.SUS_C * w.sv / 0.5;
+      sFree = CG.clamp(sFree + 0.5 * accS * dt * dt, 0, V.SUS_TRAVEL);
+
+      /* solve travel against the terrain: d(s) is linear in s */
+      var sNew = sFree;
+      var px = anx + dnx * sFree, py = any + dny * sFree;
+      this.t.sample(px, surf);
+      var kdn = dnx * surf.nx + dny * surf.ny;        // == -1 when upright on flat
+      var d = (px - surf.x) * surf.nx + (py - surf.y) * surf.ny;
+      if (d < V.WHEEL_R && kdn < -0.3) {
+        sNew = CG.clamp(sFree + (V.WHEEL_R - d) / kdn, 0, V.SUS_TRAVEL);
+        /* re-sample at the corrected position: the wheel moved in x too */
+        px = anx + dnx * sNew; py = any + dny * sNew;
+        this.t.sample(px, surf);
+        kdn = dnx * surf.nx + dny * surf.ny;
+        d = (px - surf.x) * surf.nx + (py - surf.y) * surf.ny;
+        if (d < V.WHEEL_R && kdn < -0.3) {
+          sNew = CG.clamp(sNew + (V.WHEEL_R - d) / kdn, 0, V.SUS_TRAVEL);
+          px = anx + dnx * sNew; py = any + dny * sNew;
+        }
+      }
+      w.sv = (sNew - w.s) / dt;
+      w.s = sNew;
+      w.px = px; w.py = py;
+
+      var comp = V.SUS_TRAVEL - w.s;
+      var onGround = comp > 0.15 && d < V.WHEEL_R + 1.5;
+      w.contact = onGround;
+      w.nx = surf.nx; w.ny = surf.ny;
+
+      var Ntq = 0;
+      if (onGround) {
+        contacts++;
+        var N = CG.clamp(V.SUS_K * comp - V.SUS_C * w.sv, 0, V.N_MAX);
+        w.N = N;
+        if (-w.sv > 250) this.impact = Math.max(this.impact, -w.sv);
+
+        /* contact patch and its velocity */
+        var cpx = px - surf.nx * V.WHEEL_R, cpy = py - surf.ny * V.WHEEL_R;
+        w.cpx = cpx; w.cpy = cpy;
+        var rx = cpx - this.x, ry = cpy - this.y;
+        var vcx = this.vx - this.av * ry, vcy = this.vy + this.av * rx;
+
+        /* normal force along the terrain normal */
+        fx += surf.nx * N; fy += surf.ny * N;
+        tq += rx * (surf.ny * N) - ry * (surf.nx * N);
+
+        /* longitudinal tyre force from slip */
+        var vt = vcx * surf.tx + vcy * surf.ty;
+        var slip = w.omega * V.WHEEL_R - vt;
+        var lim = V.MU * N;
+        var ft = CG.clamp(V.C_SLIP * slip, -lim, lim);
+        w.slip = slip;
+        w.skid = Math.min(1, Math.abs(slip) / 260) * (Math.abs(ft) >= lim * 0.92 ? 1 : 0.25);
+
+        fx += surf.tx * ft; fy += surf.ty * ft;
+        tq += rx * (surf.ty * ft) - ry * (surf.tx * ft);
+        Ntq = -ft * V.WHEEL_R - V.ROLL_RES * N * V.WHEEL_R * CG.sign(w.omega);
+      } else {
+        w.N = 0; w.slip = 0; w.skid = 0;
+        Ntq = -w.omega * V.SPIN_DRAG;         // free-spin drag
+      }
+
+      /* engine / brake torque on this wheel */
+      var et = 0;
+      if (drive !== 0) {
+        var opposing = CG.sign(drive) !== CG.sign(w.omega) && Math.abs(w.omega) > 3.5;
+        if (opposing) {
+          et = CG.sign(drive) * V.T_BRAKE * Math.abs(drive) * w.drive;
+        } else if (Math.abs(w.omega) < V.W_REDLINE || CG.sign(drive) !== CG.sign(w.omega)) {
+          var avail = Math.min(V.T_STALL, V.P_MAX / Math.max(Math.abs(w.omega), V.W_IDLE));
+          et = drive * avail * w.drive * boost;
+        }
+      }
+      w.omega += (Ntq + et) / V.WHEEL_I * dt;
+    }
+
+    /* --------------------------------------------------------- chassis hull */
+    var scraping = 0, hullHits = 0;
+    for (i = 0; i < V.hull.length; i++) {
+      var hl = V.hull[i];
+      var hx = this.x + hl.x * this.ca - hl.y * this.sa;
+      var hy = this.y + hl.x * this.sa + hl.y * this.ca;
+      this.t.sample(hx, surf2);
+      var hd = (hx - surf2.x) * surf2.nx + (hy - surf2.y) * surf2.ny;
+      if (hd < 0) {
+        var hrx = hx - this.x, hry = hy - this.y;
+        var hvx = this.vx - this.av * hry, hvy = this.vy + this.av * hrx;
+        var vn = hvx * surf2.nx + hvy * surf2.ny;
+        var Nh = CG.clamp(-hd * 320 - vn * 34, 0, 14000);
+        fx += surf2.nx * Nh; fy += surf2.ny * Nh;
+        tq += hrx * (surf2.ny * Nh) - hry * (surf2.nx * Nh);
+        /* body friction: scraping kills speed */
+        var vth = hvx * surf2.tx + hvy * surf2.ty;
+        var fh = CG.clamp(-vth * 1.2, -0.75 * Nh, 0.75 * Nh);
+        fx += surf2.tx * fh; fy += surf2.ty * fh;
+        tq += hrx * (surf2.ty * fh) - hry * (surf2.tx * fh);
+        scraping = Math.max(scraping, Math.min(1, Math.abs(vth) / 300));
+        hullHits++;
+        if (-hd > 2) this.impact = Math.max(this.impact, Math.abs(vn) * 0.8);
+      }
+    }
+    this.scrape = scraping;
+
+    /* ------------------------------------------------------- driver's head */
+    var hp = this.toWorld(V.head.x, V.head.y);
+    this.t.sample(hp.x, surf2);
+    if ((hp.x - surf2.x) * surf2.nx + (hp.y - surf2.y) * surf2.ny < V.headR) {
+      this.crashed = true;
+      this.crashReason = 'head';
+    }
+
+    /* ------------------------------------------------------------ integrate */
+    /* Resting on the body counts as grounded, or an inverted car sliding on its
+       roll bar reports itself airborne forever and keeps its air controls. */
+    this.wheelsDown = contacts;
+    this.onGround = contacts > 0 || hullHits > 0;
+    if (this.onGround) {
+      this.airTime = 0; this.groundTime += dt;
+      if (this.spinArmed) { this.landedSpin = this.spin; this.spinArmed = false; }
+      this.spin = 0;
+    } else {
+      this.airTime += dt; this.groundTime = 0;
+      if (this.airTime > 0.25) {
+        this.spinArmed = true;
+        this.spin += this.av * dt;
+        tq += drive > 0 ? -V.AIR_TORQUE * gas
+           : drive < 0 ? V.AIR_TORQUE * brake : 0;
+      }
+    }
+
+    /* Upside down and settled is unrecoverable. The roll bar is taller than the
+       driver's head, so an inverted car can rest without a head strike — this is
+       the check that ends that. */
+    if (this.ca < -0.3 && Math.abs(this.av) < 1.8 && sp0(this) < 240) {
+      this.upsideTime += dt;
+      if (this.upsideTime > 0.85) { this.crashed = true; this.crashReason = 'flipped'; }
+    } else if (this.ca > 0.05) this.upsideTime = 0;
+
+    var sp = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+    fx -= V.AIR_DRAG * sp * this.vx;
+    fy -= V.AIR_DRAG * sp * this.vy;
+
+    this.vx += fx / V.MASS * dt;
+    this.vy += fy / V.MASS * dt;
+    this.x += this.vx * dt;
+    this.y += this.vy * dt;
+    this.av += tq / V.INERTIA * dt;
+    this.av *= 1 / (1 + V.AV_DAMP * dt);
+    this.a += this.av * dt;
+    if (this.a > Math.PI) this.a -= CG.TAU;
+    if (this.a < -Math.PI) this.a += CG.TAU;
+
+    var wo = Math.max(Math.abs(this.wheels[0].omega), Math.abs(this.wheels[1].omega));
+    this.rpm = CG.clamp(wo / 46, 0, 1.15);
+    this.engineLoad = Math.abs(drive);
+  };
+})(CG);
+
+/* ============================= PHYSICS-CORE-END ============================= */
+
+/* ================================== ASSETS ================================== */
+(function (CG) {
+  'use strict';
+  var LIST = {
+    sky: 'background/sky.webp',
+    hillsFar: 'background/hills_far.webp',
+    hillsMid: 'background/hills_mid.webp',
+    treesNear: 'background/trees_near.webp',
+    fgGrass: 'background/foreground_grass.webp',
+    grassTop: 'terrain/grass_top.webp',
+    dirt: 'terrain/dirt_body.webp',
+    jeep: 'vehicle/jeep_body.webp',
+    wheel: 'vehicle/jeep_wheel.webp',
+    driverBody: 'vehicle/driver_body.webp',
+    driverHead: 'vehicle/driver_head.webp',
+    coin: 'pickups/coin_sheet.webp',
+    fuel: 'pickups/fuel_can.webp',
+    gem: 'pickups/gem.webp',
+    boost: 'pickups/boost.webp',
+    star: 'pickups/star.webp',
+    heart: 'pickups/heart.webp',
+    dust: 'fx/dust_sheet.webp',
+    smoke: 'fx/smoke_sheet.webp',
+    bush: 'props/bush.webp',
+    rock: 'props/rock_small.webp',
+    log: 'props/log.webp',
+    crate: 'props/crate.webp',
+    barrel: 'props/barrel.webp',
+    cone: 'props/cone.webp',
+    tyres: 'props/tyre_stack.webp',
+    signpost: 'props/signpost.webp',
+    ramp: 'props/ramp.webp',
+    flagCheck: 'props/flag_checkpoint.webp',
+    iconPlay: 'ui/icon_play.webp',
+    iconPause: 'ui/icon_pause.webp',
+    iconRestart: 'ui/icon_restart.webp',
+    iconHome: 'ui/icon_home.webp',
+    soundOn: 'ui/icon_sound_on.webp',
+    soundOff: 'ui/icon_sound_off.webp'
+  };
+
+  /* Sprite-sheet layout, measured by tools/build_assets.py. */
+  CG.SHEETS = {
+    coin: { frames: 8, frame: 192 },
+    dust: { frames: 5, frame: 172 },
+    smoke: { frames: 5, frame: 152 }
+  };
+
+  CG.img = {};
+  CG.loadAssets = function (onProgress, onDone) {
+    var keys = Object.keys(LIST), total = keys.length, done = 0, failed = [];
+    function tick(k, ok) {
+      done++;
+      if (!ok) failed.push(k);
+      onProgress(done / total);
+      if (done === total) onDone(failed);
+    }
+    keys.forEach(function (k) {
+      var im = new Image();
+      im.onload = function () { CG.img[k] = im; tick(k, true); };
+      im.onerror = function () { tick(k, false); };
+      im.src = 'assets/' + LIST[k];
+    });
+  };
+})(CG);
+
+/* =================================== AUDIO ==================================
+   Everything is synthesised — there are no audio files in the project. The
+   engine is two detuned saws through a lowpass whose cutoff and pitch track
+   wheel speed; tyre noise is filtered white noise gated by slip.            */
+(function (CG) {
+  'use strict';
+  var A = CG.Audio = {
+    ctx: null, ready: false, muted: false, master: null,
+    engine: null, tyre: null
+  };
+
+  function noiseBuffer(ctx, secs) {
+    var b = ctx.createBuffer(1, Math.floor(ctx.sampleRate * secs), ctx.sampleRate);
+    var d = b.getChannelData(0);
+    for (var i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    return b;
+  }
+
+  A.init = function () {
+    if (A.ready) return;
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    var ctx = A.ctx = new AC();
+    A.master = ctx.createGain();
+    A.master.gain.value = A.muted ? 0 : 0.9;
+    A.master.connect(ctx.destination);
+
+    /* --- engine ------------------------------------------------------- */
+    var eg = ctx.createGain(); eg.gain.value = 0;
+    var lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 500;
+    lp.Q.value = 6;
+    var o1 = ctx.createOscillator(); o1.type = 'sawtooth'; o1.frequency.value = 60;
+    var o2 = ctx.createOscillator(); o2.type = 'square'; o2.frequency.value = 61.5;
+    var og2 = ctx.createGain(); og2.gain.value = 0.45;
+    o1.connect(lp); o2.connect(og2); og2.connect(lp);
+    lp.connect(eg); eg.connect(A.master);
+    o1.start(); o2.start();
+    A.engine = { o1: o1, o2: o2, gain: eg, lp: lp };
+
+    /* --- tyre / skid noise -------------------------------------------- */
+    var src = ctx.createBufferSource();
+    src.buffer = noiseBuffer(ctx, 2); src.loop = true;
+    var bp = ctx.createBiquadFilter(); bp.type = 'bandpass';
+    bp.frequency.value = 1400; bp.Q.value = 1.1;
+    var tg = ctx.createGain(); tg.gain.value = 0;
+    src.connect(bp); bp.connect(tg); tg.connect(A.master);
+    src.start();
+    A.tyre = { gain: tg, bp: bp };
+
+    A.noise = noiseBuffer(ctx, 1.2);
+    A.ready = true;
+  };
+
+  A.resume = function () {
+    if (A.ctx && A.ctx.state === 'suspended') A.ctx.resume();
+  };
+
+  A.setMuted = function (m) {
+    A.muted = m;
+    if (A.master) A.master.gain.value = m ? 0 : 0.9;
+  };
+
+  /* Continuous engine + tyre state, called every frame. */
+  A.drive = function (rpm, load, skid, alive) {
+    if (!A.ready) return;
+    var t = A.ctx.currentTime, e = A.engine;
+    var f = 48 + rpm * 210 + load * 16;
+    e.o1.frequency.setTargetAtTime(alive ? f : 0.001, t, 0.05);
+    e.o2.frequency.setTargetAtTime(alive ? f * 1.005 : 0.001, t, 0.05);
+    e.lp.frequency.setTargetAtTime(320 + rpm * 1500 + load * 700, t, 0.06);
+    e.gain.gain.setTargetAtTime(alive ? 0.035 + load * 0.075 + rpm * 0.02 : 0, t, 0.08);
+    A.tyre.gain.gain.setTargetAtTime(Math.min(0.16, skid * 0.16), t, 0.05);
+    A.tyre.bp.frequency.setTargetAtTime(900 + skid * 1600, t, 0.08);
+  };
+
+  function ping(freq, at, dur, vol, type) {
+    var ctx = A.ctx, o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type || 'sine'; o.frequency.value = freq;
+    g.gain.setValueAtTime(0, at);
+    g.gain.linearRampToValueAtTime(vol, at + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+    o.connect(g); g.connect(A.master); o.start(at); o.stop(at + dur + 0.02);
+  }
+
+  function burst(at, dur, cut, vol, q) {
+    var ctx = A.ctx, s = ctx.createBufferSource(), f = ctx.createBiquadFilter(),
+        g = ctx.createGain();
+    s.buffer = A.noise;
+    f.type = 'lowpass'; f.Q.value = q || 1;
+    f.frequency.setValueAtTime(cut, at);
+    f.frequency.exponentialRampToValueAtTime(120, at + dur);
+    g.gain.setValueAtTime(vol, at);
+    g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+    s.connect(f); f.connect(g); g.connect(A.master);
+    s.start(at); s.stop(at + dur + 0.05);
+  }
+
+  A.sfx = function (name) {
+    if (!A.ready || A.muted) return;
+    var t = A.ctx.currentTime;
+    switch (name) {
+      case 'coin':  ping(1180, t, 0.09, 0.22, 'triangle'); ping(1760, t + 0.055, 0.12, 0.16, 'triangle'); break;
+      case 'fuel':  ping(520, t, 0.1, 0.2, 'square'); ping(700, t + 0.07, 0.1, 0.2, 'square');
+                    ping(930, t + 0.14, 0.18, 0.2, 'square'); break;
+      case 'gem':   [880, 1170, 1480, 1970].forEach(function (f, i) { ping(f, t + i * 0.05, 0.22, 0.15, 'sine'); }); break;
+      case 'boost': burst(t, 0.5, 2600, 0.28, 3); ping(180, t, 0.45, 0.18, 'sawtooth'); break;
+      case 'land':  burst(t, 0.16, 900, 0.2, 1.5); break;
+      case 'thud':  burst(t, 0.35, 500, 0.34, 2); ping(70, t, 0.3, 0.3, 'sine'); break;
+      case 'crash': burst(t, 0.75, 1800, 0.42, 1.2); ping(90, t, 0.5, 0.3, 'sawtooth');
+                    ping(60, t + 0.08, 0.6, 0.25, 'square'); break;
+      case 'flip':  [660, 880, 1100, 1320].forEach(function (f, i) { ping(f, t + i * 0.06, 0.2, 0.14, 'triangle'); }); break;
+      case 'click': ping(760, t, 0.06, 0.16, 'triangle'); break;
+      case 'over':  [520, 440, 350, 260].forEach(function (f, i) { ping(f, t + i * 0.13, 0.3, 0.18, 'triangle'); }); break;
+    }
+  };
+})(CG);
+
+/* =================================== WORLD ==================================
+   Props and pickups live in 800px chunks generated on demand from a seeded
+   RNG, so the decorated world is as endless and as deterministic as the
+   terrain under it. Collected pickups are remembered by id, which stops the
+   player from farming a coin run by reversing over it.                      */
+(function (CG) {
+  'use strict';
+  var CHUNK = 800;
+
+  /* target on-screen height in world px, per sprite */
+  var PROP_H = { bush: 62, rock: 46, log: 40, crate: 46, barrel: 50, cone: 34,
+                 tyres: 48, signpost: 66, ramp: 58 };
+  var PROP_BAG = ['bush', 'bush', 'bush', 'rock', 'rock', 'log', 'crate',
+                  'barrel', 'cone', 'tyres', 'signpost', 'ramp'];
+  var PICK_H = { coin: 34, fuel: 46, gem: 34, boost: 44, star: 40, heart: 34 };
+  var PICK_R = { coin: 24, fuel: 30, gem: 24, boost: 28, star: 28, heart: 24 };
+  CG.PICK_H = PICK_H;
+
+  var W = CG.World = {
+    seed: 1,
+    chunks: null,
+    taken: null,
+
+    init: function (seed) {
+      this.seed = seed | 0;
+      this.chunks = {};
+      this.taken = {};
+    },
+
+    chunk: function (ci) {
+      var c = this.chunks[ci];
+      if (c) return c;
+      c = this.build(ci);
+      this.chunks[ci] = c;
+      return c;
+    },
+
+    build: function (ci) {
+      var t = CG.Terrain, rnd = CG.rng((ci * 2654435761 ^ (this.seed * 40503)) >>> 0);
+      var x0 = ci * CHUNK, props = [], picks = [], i, x, s;
+
+      /* ---- decoration ---- */
+      var nProps = ci < 1 ? 1 : 2 + Math.floor(rnd() * 3);
+      for (i = 0; i < nProps; i++) {
+        x = x0 + rnd() * CHUNK;
+        if (x < 260) continue;
+        s = t.sample(x);
+        if (Math.abs(s.m) > 0.55) continue;                 // nothing on cliffs
+        var kind = PROP_BAG[Math.floor(rnd() * PROP_BAG.length)];
+        props.push({ kind: kind, x: x, y: s.y, ang: s.ang,
+                     h: PROP_H[kind] * (0.82 + rnd() * 0.4),
+                     flip: rnd() < 0.4, back: rnd() < 0.35 });
+      }
+
+      /* ---- distance marker flag every 160 m ---- */
+      if (ci > 0 && ci % 10 === 0) {
+        s = t.sample(x0 + 40);
+        props.push({ kind: 'flagCheck', x: x0 + 40, y: s.y, ang: s.ang, h: 96,
+                     flip: false, back: false, marker: ci / 10 });
+      }
+
+      /* ---- pickups ---- */
+      var id = 0;
+      function add(type, x, y) {
+        picks.push({ type: type, x: x, y: y, id: ci + ':' + (id++),
+                     ph: rnd() * 6.28, r: PICK_R[type] });
+      }
+      if (ci > 0 && rnd() < 0.72) {                          // a run of coins
+        var n = 4 + Math.floor(rnd() * 4), gap = 52 + rnd() * 18;
+        var sx = x0 + 60 + rnd() * (CHUNK - n * gap - 120);
+        var lift = 46 + rnd() * 46, arc = rnd() < 0.4 ? 62 : 0;
+        for (i = 0; i < n; i++) {
+          x = sx + i * gap;
+          var f = i / (n - 1);
+          add('coin', x, CG.Terrain.y(x) - lift - Math.sin(f * Math.PI) * arc);
+        }
+      }
+      if (ci > 1 && ci % 5 === 1) {                          // fuel, reliably
+        x = x0 + 200 + rnd() * 400;
+        add('fuel', x, CG.Terrain.y(x) - 56);
+      }
+      if (ci > 2 && rnd() < 0.14) { x = x0 + rnd() * CHUNK; add('gem', x, CG.Terrain.y(x) - 62); }
+      if (ci > 2 && rnd() < 0.16) { x = x0 + rnd() * CHUNK; add('boost', x, CG.Terrain.y(x) - 58); }
+      if (ci > 4 && rnd() < 0.07) { x = x0 + rnd() * CHUNK; add('heart', x, CG.Terrain.y(x) - 58); }
+      if (ci > 3 && rnd() < 0.05) { x = x0 + rnd() * CHUNK; add('star', x, CG.Terrain.y(x) - 74); }
+
+      return { i: ci, x0: x0, props: props, picks: picks };
+    },
+
+    /* Walk the chunks overlapping [l, r]. */
+    each: function (l, r, cb) {
+      var a = Math.floor(l / CHUNK), b = Math.floor(r / CHUNK), i;
+      for (i = a; i <= b; i++) cb(this.chunk(i));
+    },
+
+    /* Called once per frame — a for-in sweep per query is wasted work. */
+    prune: function (left) {
+      var keep = Math.floor(left / CHUNK) - 4;
+      for (var k in this.chunks) if (this.chunks[k].i < keep) delete this.chunks[k];
+    },
+
+    isTaken: function (id) { return !!this.taken[id]; },
+    take: function (id) { this.taken[id] = 1; }
+  };
+
+  /* ==================================== FX ================================= */
+  var FX = CG.FX = {
+    parts: [],
+    texts: [],
+
+    reset: function () { this.parts.length = 0; this.texts.length = 0; },
+
+    spawn: function (sheet, x, y, vx, vy, size, life, spin, front) {
+      if (this.parts.length > 190) this.parts.shift();
+      this.parts.push({ sheet: sheet, x: x, y: y, vx: vx, vy: vy, size: size,
+                        t: 0, life: life, rot: Math.random() * 6.28,
+                        spin: spin || 0, front: !!front });
+    },
+
+    dust: function (x, y, vx, vy, power) {
+      var n = 1 + (Math.random() < power ? 1 : 0);
+      for (var i = 0; i < n; i++) {
+        this.spawn('dust', x + (Math.random() - 0.5) * 14, y + (Math.random() - 0.5) * 8,
+          vx * (0.2 + Math.random() * 0.35) + (Math.random() - 0.5) * 60,
+          vy * 0.2 - 30 - Math.random() * 70,
+          26 + Math.random() * 30 + power * 26, 0.5 + Math.random() * 0.4,
+          (Math.random() - 0.5) * 3, true);
+      }
+    },
+
+    smoke: function (x, y, vx, vy) {
+      this.spawn('smoke', x, y, vx * 0.25 + (Math.random() - 0.5) * 30,
+        vy * 0.25 - 26 - Math.random() * 26, 20 + Math.random() * 16,
+        0.55 + Math.random() * 0.35, (Math.random() - 0.5) * 1.6, false);
+    },
+
+    text: function (x, y, str, col, big) {
+      this.texts.push({ x: x, y: y, str: str, col: col || '#FFF', t: 0,
+                        life: big ? 1.5 : 1.1, big: !!big });
+    },
+
+    update: function (dt) {
+      var i, p;
+      for (i = this.parts.length - 1; i >= 0; i--) {
+        p = this.parts[i];
+        p.t += dt;
+        if (p.t >= p.life) { this.parts.splice(i, 1); continue; }
+        p.x += p.vx * dt; p.y += p.vy * dt;
+        p.vy += 26 * dt;                       // dust drifts, it does not fall fast
+        p.vx *= 1 / (1 + 1.6 * dt);
+        p.vy *= 1 / (1 + 1.1 * dt);
+        p.rot += p.spin * dt;
+        p.size += 34 * dt;
+      }
+      for (i = this.texts.length - 1; i >= 0; i--) {
+        var q = this.texts[i];
+        q.t += dt; q.y -= (q.big ? 46 : 34) * dt;
+        if (q.t >= q.life) this.texts.splice(i, 1);
+      }
+    }
+  };
+})(CG);
+
+/* ================================== RENDER ================================= */
+(function (CG) {
+  'use strict';
+  var V = CG.VConst;
+  var R = CG.R = {
+    canvas: null, ctx: null, W: 1280, H: 720, dpr: 1,
+    cam: { x: 0, y: 0, z: 1 },
+    shake: 0,
+    quality: 1,
+    cache: {}
+  };
+
+  /* Pre-scale an image to the size it is actually drawn at, once, and reuse it.
+     Every per-frame drawImage then hits the 1:1 fast path instead of resampling
+     a 1774px source hundreds of times a second. */
+  function scaled(key, img, w, h, sy) {
+    w = Math.max(1, Math.round(w)); h = Math.max(1, Math.round(h));
+    sy = sy || 0;
+    var e = R.cache[key];
+    if (e && e.w === w && e.h === h && e.src === img) return e.c;
+    var cv = (e && e.c) || document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    var cx = cv.getContext('2d');
+    cx.imageSmoothingQuality = 'high';        // one-off, so quality is free
+    cx.clearRect(0, 0, w, h);
+    cx.drawImage(img, 0, sy, img.width, img.height - sy, 0, 0, w, h);
+    R.cache[key] = { c: cv, w: w, h: h, src: img };
+    return cv;
+  }
+  R.scaled = scaled;
+
+  /* grass_top is a cap strip: green down to ~row 230, then dirt. Rows
+     0..300 keep the whole grass-to-soil transition, and 300/4.479 preserves
+     the texture's own aspect ratio at GRASS_WORLD_W. */
+  /* Cap art: green to row ~210, then a root/soil transition.
+     GRASS_WORLD_W is chosen so the cap's texture is drawn at ~3.0 source px
+     per world px, near the tiled soil's 2.0 (dirt_body 1254 over a 627px
+     tile). Bringing the two detail scales close is what stops the cap's lower
+     edge reading as a hard geological seam — the tones already matched; it was
+     fine grain meeting coarse grain that showed. Matching them exactly would
+     mean a 112px grass band, which is too deep against a 240px car. */
+  var GRASS_SRC_ROWS = 250;
+  var GRASS_WORLD_W = 840;     // world px covered by one width of the texture
+  var GRASS_CAP = 84;          // world px of cap drawn along the surface
+  var CAP_PAD = 4;             // slice overrun, in px, at each end
+  var SOIL_RGB = '101,76,42';  // measured mean of the rendered tiled soil
+  /* Half of dirt_body's native 1254px. A small tile repeats several times a
+     second at speed, which reads as the ground racing past; at 627 world px
+     (~12.5m) the soil scrolls calmly and the painted stones sit at close to
+     their authored size. Halving is also a clean 2:1 downscale. */
+  var dirtPat = null, patTile = 627;
+
+  R.attach = function (canvas) {
+    R.canvas = canvas;
+    R.ctx = canvas.getContext('2d', { alpha: false });
+    R.resize();
+  };
+
+  R.resize = function () {
+    var cw = R.canvas.clientWidth || window.innerWidth;
+    var ch = R.canvas.clientHeight || window.innerHeight;
+    var aspect = cw / Math.max(1, ch);
+    /* 1.75 is the ceiling rather than 2: the art is soft-edged, and a full 2x
+       backing store on a retina display doubles the fill cost of the two
+       screen-sized terrain passes for no visible gain. R.quality is then
+       lowered further at runtime if frames run long. */
+    R.dpr = Math.min(1.75, window.devicePixelRatio || 1) * R.quality;
+    /* Landscape fits to height and widens; anything narrower than 5:4 fits to
+       WIDTH and grows taller instead. Clamping width on a portrait screen would
+       push the right-hand pedal off the display. */
+    if (aspect >= 1.25) {
+      R.H = 720;
+      R.W = CG.clamp(Math.round(720 * aspect), 900, 1900);
+      R.scale = (ch * R.dpr) / R.H;
+    } else {
+      R.W = 900;
+      R.H = Math.round(900 / Math.max(0.35, aspect));
+      R.scale = (cw * R.dpr) / R.W;
+    }
+    /* Vertical design unit: background layers are sized off this rather than
+       off H, so a tall portrait view does not turn the hills into mountains. */
+    R.VU = Math.min(R.H, R.W * 0.8);
+    R.canvas.width = Math.round(cw * R.dpr);
+    R.canvas.height = Math.round(ch * R.dpr);
+    /* 'high' resampling is very costly per drawImage and this renderer issues
+       hundreds per frame; tiles are pre-scaled to 1:1 instead. */
+    R.ctx.imageSmoothingQuality = 'low';
+    R.cache = {};
+  };
+
+  /* Set render resolution as a fraction of the device's, and rebuild caches. */
+  R.setQuality = function (q) {
+    q = CG.clamp(q, 0.55, 1);
+    if (Math.abs(q - R.quality) < 0.01) return;
+    R.quality = q;
+    R.resize();
+  };
+
+  R.begin = function () {
+    var c = R.ctx;
+    c.setTransform(R.scale, 0, 0, R.scale, 0, 0);
+    if (R.shake > 0.01) {
+      c.translate((Math.random() - 0.5) * R.shake, (Math.random() - 0.5) * R.shake);
+    }
+  };
+
+  /* world -> screen */
+  R.sx = function (x) { return (x - R.cam.x) * R.cam.z + R.W / 2; };
+  R.sy = function (y) { return (y - R.cam.y) * R.cam.z + R.H / 2; };
+
+  /* ------------------------------------------------------------- background */
+  /* mirror: hills_mid is the one layer whose left and right edges do not meet
+     (measured 23x the interior column difference — a visible vertical seam).
+     Flipping alternate tiles makes the join exact, and it is safe here because
+     the layer is hazed and has no strongly directional highlights. */
+  /* `top` is the fraction of the source image that is fully transparent above
+     the artwork (measured, with a 10px margin). Those rows are cropped out of
+     the pre-scaled tile, so each frame blends only real pixels — the three
+     layers were otherwise spending most of their fill on empty alpha. */
+  var LAYERS = [
+    { k: 'hillsFar',  f: 0.10, yOff: 74,  hf: 0.62, top: 618 / 887 },
+    { k: 'hillsMid',  f: 0.20, yOff: 126, hf: 0.72, top: 508 / 887, mirror: true },
+    { k: 'treesNear', f: 0.42, yOff: 196, hf: 0.60, top: 312 / 887 }
+  ];
+
+  function tileRow(key, img, xScroll, bottomY, h, mirror, top) {
+    var c = R.ctx, tw = Math.round(h * (img.width / img.height));
+    if (tw < 8) return;
+    if (top) h = h * (1 - top);            // drop the empty rows, keep bottomY
+    var tile = scaled(key, img, tw, h, top ? Math.round(top * img.height) : 0);
+    var th = tile.height, y = Math.round(bottomY - th);
+    var period = mirror ? tw * 2 : tw;
+    var x = -(((xScroll % period) + period) % period), i = 0;
+    for (; x < R.W; x += tw, i++) {
+      if (mirror && (i & 1)) {
+        c.save();
+        c.translate(Math.round(x) + tw, y);
+        c.scale(-1, 1);
+        c.drawImage(tile, 0, 0);
+        c.restore();
+      } else {
+        c.drawImage(tile, Math.round(x), y);
+      }
+    }
+  }
+
+  R.drawBackground = function () {
+    var c = R.ctx, cam = R.cam, i, L;
+    c.fillStyle = '#0288D1';
+    c.fillRect(0, 0, R.W, R.H);
+
+    var sky = CG.img.sky;
+    if (sky) {
+      var sh = Math.max(R.H * 1.15, R.VU * 1.7);
+      var sy = R.H * 0.5 - sh * 0.62 + (CG.BASE_Y - cam.y) * 0.05;
+      tileRow('sky', sky, cam.x * 0.04, sy + sh, sh);
+      /* the sky art is not tall enough to cover a big climb — cap the gap */
+      if (sy > 0) { c.fillStyle = '#0288D1'; c.fillRect(0, 0, R.W, sy + 1); }
+    }
+    for (i = 0; i < LAYERS.length; i++) {
+      L = LAYERS[i];
+      var im = CG.img[L.k];
+      if (!im) continue;
+      tileRow(L.k, im, cam.x * L.f, R.H * 0.5 + L.yOff + (CG.BASE_Y - cam.y) * L.f,
+              R.VU * L.hf, L.mirror, L.top);
+    }
+  };
+
+  R.drawForeground = function () {
+    var im = CG.img.fgGrass;
+    if (!im) return;
+    var c = R.ctx, h = 132;
+    c.save();
+    c.globalAlpha = 0.92;
+    tileRow('fg', im, R.cam.x * 1.12, R.H + 14, h, false, 232 / 724);
+    c.restore();
+  };
+
+  /* ---------------------------------------------------------------- terrain */
+  function makeDirtPattern() {
+    var src = CG.img.dirt;
+    if (!src) return null;
+    /* Downscaling in one step resamples the tile's edge pixels without their
+       wrapped neighbours, which leaves a faint grid every tile. Lay the source
+       out 3x3, scale that, then cut the centre tile: its edges then resample
+       against real neighbouring content. */
+    var big = document.createElement('canvas');
+    big.width = big.height = patTile * 3;
+    var bc = big.getContext('2d');
+    for (var iy = 0; iy < 3; iy++) {
+      for (var ix = 0; ix < 3; ix++) {
+        bc.drawImage(src, ix * patTile, iy * patTile, patTile, patTile);
+      }
+    }
+    var off = document.createElement('canvas');
+    off.width = off.height = patTile;
+    off.getContext('2d').drawImage(big, patTile, patTile, patTile, patTile,
+                                   0, 0, patTile, patTile);
+    return R.ctx.createPattern(off, 'repeat');
+  }
+
+  /* The cap is shaded ONCE into its own tile rather than per ribbon slice:
+     a gradient drawn per slice compounds wherever slices overlap and leaves
+     vertical ribbing. Baking it in also lets the bottom rows fade out, so the
+     cap melts into the tiled soil instead of ending on a hard line. */
+  function makeCapTile(tw, th) {
+    var gt = CG.img.grassTop;
+    if (!gt) return null;
+    /* Two copies side by side: a slice near the end of the tile can then read
+       past the period without wrapping. Clamping the source x instead left a
+       visible texture jump once every period. */
+    var off = document.createElement('canvas');
+    off.width = tw * 2; off.height = th;
+    var oc = off.getContext('2d');
+    oc.imageSmoothingQuality = 'high';
+    oc.drawImage(gt, 0, 0, gt.width, GRASS_SRC_ROWS, 0, 0, tw, th);
+    oc.drawImage(gt, 0, 0, gt.width, GRASS_SRC_ROWS, tw, 0, tw, th);
+    var g = oc.createLinearGradient(0, 0, 0, th);
+    g.addColorStop(0, 'rgba(43,33,24,0)');
+    g.addColorStop(0.40, 'rgba(43,33,24,0.05)');
+    g.addColorStop(1, 'rgba(43,33,24,0.32)');
+    oc.fillStyle = g;
+    oc.fillRect(0, 0, tw, th);
+    /* The cap must stay FULLY OPAQUE. Slices have to overlap to be watertight
+       (see drawTerrain), and any semi-transparent rows would double up in the
+       overlaps as dark streaks. So the bottom rows are blended in RGB toward
+       the tiled soil's mean tone instead of toward transparency: the join is
+       then a texture change with no tonal step, and no alpha to compound. */
+    var top = th * 0.88;
+    var g2 = oc.createLinearGradient(0, top, 0, th);
+    g2.addColorStop(0, 'rgba(' + SOIL_RGB + ',0)');
+    g2.addColorStop(1, 'rgba(' + SOIL_RGB + ',1)');
+    oc.fillStyle = g2;
+    oc.fillRect(0, top, off.width, th - top);
+    return off;
+  }
+
+  /* Rebuilt only when the quantised zoom step changes, so the ribbon can blit
+     the cap at 1:1 without resampling the source rows per slice. */
+  function capFor(z) {
+    var qz = Math.round(z * 40) / 40;
+    var e = R.cache.cap;
+    if (e && e.qz === qz) return e;
+    var tw = Math.max(8, Math.round(GRASS_WORLD_W * qz));
+    var th = Math.max(2, Math.round(GRASS_CAP * qz));
+    var cv = makeCapTile(tw, th);
+    if (!cv) return null;
+    e = { qz: qz, c: cv, w: tw, h: th, per: tw / GRASS_WORLD_W };
+    R.cache.cap = e;
+    return e;
+  }
+
+  /* Surface polyline across the view, reused by the fill and the ribbon. */
+  var pts = [];
+  R.buildSurface = function () {
+    var z = R.cam.z, step = 10 / z;   // 10 screen px per ribbon slice
+    var wl = R.cam.x - (R.W / 2 + 30) / z, wr = R.cam.x + (R.W / 2 + 30) / z;
+    var n = 0, x;
+    for (x = wl; x <= wr + step; x += step) {
+      var p = pts[n] || (pts[n] = {});
+      p.wx = x; p.wy = CG.Terrain.y(x);
+      p.x = R.sx(x); p.y = R.sy(p.wy);
+      n++;
+    }
+    pts.length = n;
+    return pts;
+  };
+
+  R.drawTerrain = function () {
+    var c = R.ctx, p = R.buildSurface(), i, z = R.cam.z;
+    var cap = capFor(z);
+    if (!p.length) return;
+
+    /* dirt body: everything under the surface */
+    c.save();
+    c.beginPath();
+    c.moveTo(p[0].x - 4, p[0].y);
+    for (i = 1; i < p.length; i++) c.lineTo(p[i].x, p[i].y);
+    c.lineTo(p[p.length - 1].x + 4, R.H + 10);
+    c.lineTo(p[0].x - 4, R.H + 10);
+    c.closePath();
+    c.clip();
+    if (!dirtPat) dirtPat = makeDirtPattern();
+    if (dirtPat) {
+      var ox = -(R.cam.x * z) % patTile, oy = -(R.cam.y * z) % patTile;
+      c.fillStyle = dirtPat;
+      c.translate(ox, oy);
+      c.fillRect(-ox - patTile, -oy - patTile, R.W + patTile * 2, R.H + patTile * 2);
+      c.translate(-ox, -oy);
+    } else {
+      c.fillStyle = '#8D6E63';
+      c.fillRect(0, 0, R.W, R.H);
+    }
+    /* A little screen-space depth under the cap's own shading. Cached, and
+       only over the lower part of the screen where it is actually visible. */
+    if (!R.cache.deep) {
+      var g = c.createLinearGradient(0, R.H * 0.42, 0, R.H);
+      g.addColorStop(0, 'rgba(43,33,24,0)');
+      g.addColorStop(1, 'rgba(43,33,24,0.32)');
+      R.cache.deep = g;
+    }
+    c.fillStyle = R.cache.deep;
+    c.fillRect(0, R.H * 0.42, R.W, R.H * 0.58);
+    c.restore();
+
+    /* Grass cap: a ribbon of slices, each rotated to the local slope so the
+       strip follows the ground exactly.
+
+       Each slice is a rectangle rotated about ITS OWN surface point, so where
+       the terrain curves, neighbouring slices splay apart and open a thin
+       wedge down to the full depth of the cap — which showed up as dark
+       streaks hanging into the soil. The fix is to overrun each slice by CAP_PAD
+       at both ends so neighbours always overlap by more than any wedge can
+       open. The overrun is applied to the source and destination equally, so
+       the blit stays 1:1, and the cap is opaque, so overlapping is invisible. */
+    if (!cap) return;
+    for (i = 0; i < p.length - 1; i++) {
+      var a = p[i], b = p[i + 1];
+      var dx = b.x - a.x, dy = b.y - a.y;
+      var len = Math.sqrt(dx * dx + dy * dy);
+      if (len < 0.2) continue;
+      var sw = len + CAP_PAD * 2;
+      if (sw > cap.w) continue;
+      var srcX = (a.wx * cap.per - CAP_PAD) % cap.w;
+      if (srcX < 0) srcX += cap.w;
+      c.save();
+      c.translate(a.x, a.y);
+      c.rotate(Math.atan2(dy, dx));
+      c.drawImage(cap.c, srcX, 0, sw, cap.h, -CAP_PAD, 0, sw, cap.h);
+      c.restore();
+    }
+  };
+
+  /* ------------------------------------------------------------------ props */
+  function drawOnGround(img, x, y, ang, h, flip, alpha) {
+    var c = R.ctx, z = R.cam.z;
+    var w = h * (img.width / img.height);
+    c.save();
+    c.translate(R.sx(x), R.sy(y));
+    c.rotate(ang);
+    c.scale(z * (flip ? -1 : 1), z);
+    if (alpha !== undefined) c.globalAlpha = alpha;
+    c.drawImage(img, -w / 2, -h + 3, w, h);
+    c.restore();
+  }
+
+  R.drawProps = function (back) {
+    var wl = R.cam.x - (R.W / 2 + 200) / R.cam.z, wr = R.cam.x + (R.W / 2 + 200) / R.cam.z;
+    CG.World.each(wl, wr, function (ch) {
+      for (var i = 0; i < ch.props.length; i++) {
+        var pr = ch.props[i];
+        if (!!pr.back !== !!back) continue;
+        if (pr.x < wl - 120 || pr.x > wr + 120) continue;
+        var im = CG.img[pr.kind];
+        if (im) drawOnGround(im, pr.x, pr.y, pr.ang, pr.h, pr.flip);
+        if (pr.marker) {
+          var c = R.ctx;
+          c.save();
+          c.translate(R.sx(pr.x), R.sy(pr.y) - pr.h * R.cam.z - 10);
+          R.text(String(pr.marker * 160) + 'm', 0, 0, 20, '#FFF9C4', 'center', 4);
+          c.restore();
+        }
+      }
+    });
+  };
+
+  /* ---------------------------------------------------------------- pickups */
+  R.drawPickups = function (time) {
+    var c = R.ctx, z = R.cam.z;
+    var wl = R.cam.x - (R.W / 2 + 90) / z, wr = R.cam.x + (R.W / 2 + 90) / z;
+    var sheet = CG.SHEETS.coin;
+    CG.World.each(wl, wr, function (ch) {
+      for (var i = 0; i < ch.picks.length; i++) {
+        var p = ch.picks[i];
+        if (p.x < wl - 60 || p.x > wr + 60 || CG.World.isTaken(p.id)) continue;
+        var bob = Math.sin(time * 2.4 + p.ph) * 5;
+        var sx = R.sx(p.x), sy = R.sy(p.y) + bob * z;
+        var h = CG.PICK_H[p.type] * z;
+        if (p.type === 'coin') {
+          var im = CG.img.coin;
+          if (!im) continue;
+          var fr = Math.floor(time * 11 + p.ph * 3) % sheet.frames;
+          c.drawImage(im, fr * sheet.frame, 0, sheet.frame, sheet.frame,
+                      sx - h / 2, sy - h / 2, h, h);
+        } else {
+          var im2 = CG.img[p.type];
+          if (!im2) continue;
+          var w = h * (im2.width / im2.height);
+          /* soft glow so pickups read against busy grass — one pre-rendered
+             sprite, rather than a fresh radial gradient per pickup per frame */
+          var gl = R.glow();
+          var gs = h * 1.9;
+          c.drawImage(gl, sx - gs / 2, sy - gs / 2, gs, gs);
+          c.drawImage(im2, sx - w / 2, sy - h / 2, w, h);
+        }
+      }
+    });
+  };
+
+  R.glow = function () {
+    if (R.cache.glow) return R.cache.glow;
+    var cv = document.createElement('canvas');
+    cv.width = cv.height = 128;
+    var cx = cv.getContext('2d');
+    var g = cx.createRadialGradient(64, 64, 2, 64, 64, 62);
+    g.addColorStop(0, 'rgba(255,245,180,0.55)');
+    g.addColorStop(0.55, 'rgba(255,245,180,0.22)');
+    g.addColorStop(1, 'rgba(255,245,180,0)');
+    cx.fillStyle = g;
+    cx.fillRect(0, 0, 128, 128);
+    R.cache.glow = cv;
+    return cv;
+  };
+
+  /* ---------------------------------------------------------------- vehicle */
+  R.drawVehicle = function (v, dt) {
+    var c = R.ctx, z = R.cam.z, ART = V.ART, i, w;
+    var jeep = CG.img.jeep, wheel = CG.img.wheel;
+    c.save();
+    c.translate(R.sx(v.x), R.sy(v.y));
+    c.rotate(v.a);
+    c.scale(z, z);
+
+    /* wheels first — they sit behind the chassis and protrude below the arches */
+    if (wheel) {
+      var wd = 2 * V.WHEEL_R * (wheel.width / (2 * 587));   // 587px = tyre radius in art
+      for (i = 0; i < 2; i++) {
+        w = v.wheels[i];
+        c.save();
+        c.translate(w.ax, w.ay + w.s);
+        c.rotate(w.ang || 0);
+        c.drawImage(wheel, -wd / 2, -wd / 2, wd, wd);
+        c.restore();
+      }
+    }
+    if (jeep) {
+      c.drawImage(jeep, V.bodyOrigin.x, V.bodyOrigin.y,
+                  jeep.width * ART, jeep.height * ART);
+    }
+
+    /* driver: hip pinned to the seat, head pivoting on the neck joint */
+    var ds = 0.62 * ART;
+    var body = CG.img.driverBody, head = CG.img.driverHead;
+    var HIP = [55, 170], COLLAR = [76, 13];
+    if (body) {
+      c.drawImage(body, V.seat.x - HIP[0] * ds, V.seat.y - HIP[1] * ds,
+                  body.width * ds, body.height * ds);
+    }
+    if (head) {
+      var cx = V.seat.x + (COLLAR[0] - HIP[0]) * ds;
+      var cy = V.seat.y + (COLLAR[1] - HIP[1]) * ds;
+      c.save();
+      c.translate(cx, cy);
+      c.rotate(v.headLean || 0);
+      c.drawImage(head, -head.width * ds / 2, -head.height * ds / 2,
+                  head.width * ds, head.height * ds);
+      c.restore();
+    }
+    c.restore();
+  };
+
+  /* --------------------------------------------------------------------- fx */
+  R.drawFX = function (front) {
+    var c = R.ctx, z = R.cam.z, i;
+    for (i = 0; i < CG.FX.parts.length; i++) {
+      var p = CG.FX.parts[i];
+      if (!!p.front !== !!front) continue;
+      var sh = CG.SHEETS[p.sheet], im = CG.img[p.sheet];
+      if (!im || !sh) continue;
+      var f = CG.clamp(Math.floor(p.t / p.life * sh.frames), 0, sh.frames - 1);
+      var s = p.size * z;
+      c.save();
+      c.globalAlpha = CG.clamp(1.15 - p.t / p.life, 0, 1);
+      c.translate(R.sx(p.x), R.sy(p.y));
+      c.rotate(p.rot);
+      c.drawImage(im, f * sh.frame, 0, sh.frame, sh.frame, -s / 2, -s / 2, s, s);
+      c.restore();
+    }
+  };
+
+  R.drawTexts = function () {
+    var c = R.ctx;
+    for (var i = 0; i < CG.FX.texts.length; i++) {
+      var t = CG.FX.texts[i];
+      var k = t.t / t.life;
+      c.save();
+      c.globalAlpha = CG.clamp(1.6 - k * 1.8, 0, 1);
+      R.text(t.str, R.sx(t.x), R.sy(t.y), (t.big ? 34 : 23) * (1 + k * 0.25),
+             t.col, 'center', 5);
+      c.restore();
+    }
+  };
+
+  /* ------------------------------------------------------------- ui helpers */
+  R.text = function (str, x, y, size, fill, align, outline) {
+    var c = R.ctx;
+    c.font = '800 ' + size + 'px "Nunito", "Trebuchet MS", system-ui, sans-serif';
+    c.textAlign = align || 'left';
+    c.textBaseline = 'middle';
+    if (outline) {
+      c.lineWidth = outline;
+      c.lineJoin = 'round';
+      c.strokeStyle = 'rgba(43,33,24,0.92)';
+      c.strokeText(str, x, y);
+    }
+    c.fillStyle = fill;
+    c.fillText(str, x, y);
+  };
+
+  R.roundRect = function (x, y, w, h, r) {
+    var c = R.ctx;
+    r = Math.min(r, w / 2, h / 2);
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y, x + w, y + h, r);
+    c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r);
+    c.arcTo(x, y, x + w, y, r);
+    c.closePath();
+  };
+
+  R.panel = function (x, y, w, h, r, fill, alpha) {
+    var c = R.ctx;
+    c.save();
+    c.globalAlpha = alpha === undefined ? 1 : alpha;
+    R.roundRect(x, y, w, h, r);
+    c.fillStyle = fill || 'rgba(43,33,24,0.42)';
+    c.fill();
+    c.restore();
+  };
+})(CG);
+
+/* ==================================== GAME ================================= */
+(function (CG) {
+  'use strict';
+  var R = CG.R, A = CG.Audio, V = CG.VConst, FX = CG.FX;
+  var SUB = 1 / 180;                 // fixed physics substep — 60Hz diverges,
+                                     // 90Hz+ converges (tools/sim_test.js)
+
+  var G = CG.Game = {
+    state: 'title',
+    v: null,
+    time: 0, dist: 0, coins: 0, fuel: 100, safety: 0,
+    best: 0, bank: 0,
+    boostT: 0, deadT: 0, invuln: 0,
+    reason: '', newBest: false, runCoins: 0,
+    input: { gas: 0, brake: 0, boost: false },
+    muted: false,
+    seed: 1
+  };
+
+  var FUEL_MAX = 100, FUEL_DRIVE = 3.4, FUEL_IDLE = 1.0, FUEL_CAN = 34;
+  var buttons = [], pointers = {}, keys = {};
+  var acc = 0, dustT = 0, smokeT = 0, lastSafeX = 0, lastSafeT = 0;
+
+  /* -------------------------------------------------------------- storage */
+  function load() {
+    try {
+      G.best = +(localStorage.getItem('cg_best') || 0) || 0;
+      G.bank = +(localStorage.getItem('cg_coins') || 0) || 0;
+      G.muted = localStorage.getItem('cg_muted') === '1';
+    } catch (e) { /* file:// or private mode — run without persistence */ }
+  }
+  function save() {
+    try {
+      localStorage.setItem('cg_best', String(Math.round(G.best)));
+      localStorage.setItem('cg_coins', String(Math.round(G.bank)));
+      localStorage.setItem('cg_muted', G.muted ? '1' : '0');
+    } catch (e) {}
+  }
+
+  /* ---------------------------------------------------------------- run */
+  G.newRun = function () {
+    G.seed = (Math.random() * 1e9) | 0 || 1;
+    CG.Terrain.setSeed(G.seed);
+    CG.World.init(G.seed);
+    FX.reset();
+    G.v = new CG.Vehicle(CG.Terrain);
+    G.v.reset(160);
+    G.v.headLean = 0;
+    G.time = 0; G.dist = 0; G.coins = 0; G.runCoins = 0;
+    G.fuel = FUEL_MAX; G.safety = 0;
+    G.boostT = 0; G.deadT = 0; G.invuln = 0;
+    G.reason = ''; G.newBest = false;
+    lastSafeX = G.v.x; lastSafeT = 0;
+    R.cam.x = G.v.x; R.cam.y = G.v.y; R.cam.z = 1;
+    R.shake = 0;
+    G.state = 'play';
+  };
+
+  G.toTitle = function () {
+    G.seed = 12345;
+    CG.Terrain.setSeed(G.seed);
+    CG.World.init(G.seed);
+    FX.reset();
+    G.v = new CG.Vehicle(CG.Terrain);
+    G.v.reset(300);
+    G.v.headLean = 0;
+    G.fuel = FUEL_MAX;
+    R.cam.x = G.v.x + 0.12 * R.W; R.cam.y = G.v.y - 62; R.cam.z = 1.12;
+    G.state = 'title';
+  };
+
+  function gameOver(why) {
+    if (G.state !== 'play') return;
+    G.state = 'over';
+    G.reason = why;
+    G.bank += G.coins;
+    if (G.dist > G.best) { G.best = G.dist; G.newBest = true; }
+    save();
+    A.sfx(why === 'fuel' ? 'over' : 'crash');
+    A.drive(0, 0, 0, false);
+    R.shake = why === 'fuel' ? 0 : 16;
+  }
+
+  /* Respawn instead of dying, if a heart was collected. */
+  function useSafety() {
+    G.safety--;
+    var x = Math.max(120, lastSafeX - 70);
+    G.v.reset(x);
+    G.v.crashed = false; G.v.crashReason = ''; G.v.upsideTime = 0;
+    G.v.headLean = 0;
+    G.invuln = 1.4;
+    G.fuel = Math.max(G.fuel, 22);
+    FX.text(G.v.x, G.v.y - 90, 'SAVED!', '#EF5350', true);
+    A.sfx('gem');
+    R.shake = 10;
+  }
+
+  /* ------------------------------------------------------------ pickups */
+  var seg = {};
+  function pickDist(p, v) {
+    /* distance from the pickup to the axle-to-axle segment, so the whole car
+       collects rather than just a circle around its centre */
+    var ax = v.x + V.axleRear.x * v.ca - V.axleRear.y * v.sa;
+    var ay = v.y + V.axleRear.x * v.sa + V.axleRear.y * v.ca;
+    var bx = v.x + V.axleFront.x * v.ca - V.axleFront.y * v.sa;
+    var by = v.y + V.axleFront.x * v.sa + V.axleFront.y * v.ca;
+    var dx = bx - ax, dy = by - ay;
+    var t = CG.clamp(((p.x - ax) * dx + (p.y - ay) * dy) / (dx * dx + dy * dy), 0, 1);
+    var qx = ax + dx * t - p.x, qy = ay + dy * t - p.y;
+    return Math.sqrt(qx * qx + qy * qy);
+  }
+
+  function collect(v) {
+    var wl = v.x - 260, wr = v.x + 260;
+    CG.World.each(wl, wr, function (ch) {
+      for (var i = 0; i < ch.picks.length; i++) {
+        var p = ch.picks[i];
+        if (CG.World.isTaken(p.id)) continue;
+        if (p.x < wl || p.x > wr) continue;
+        if (pickDist(p, v) > p.r + 40) continue;
+        CG.World.take(p.id);
+        switch (p.type) {
+          case 'coin':
+            G.coins++; A.sfx('coin');
+            FX.spawn('dust', p.x, p.y, 0, -40, 20, 0.32, 2, true);
+            break;
+          case 'fuel':
+            G.fuel = Math.min(FUEL_MAX, G.fuel + FUEL_CAN);
+            A.sfx('fuel'); FX.text(p.x, p.y - 40, '+FUEL', '#AED581');
+            break;
+          case 'gem':
+            G.coins += 25; A.sfx('gem'); FX.text(p.x, p.y - 40, '+25', '#4FC3F7');
+            break;
+          case 'boost':
+            G.boostT = 2.4; A.sfx('boost'); FX.text(p.x, p.y - 40, 'BOOST!', '#FFD54F', true);
+            break;
+          case 'heart':
+            G.safety++; A.sfx('gem'); FX.text(p.x, p.y - 40, '+1 SAVE', '#EF5350');
+            break;
+          case 'star':
+            G.coins += 50; A.sfx('gem');
+            FX.text(p.x, p.y - 44, '+50', '#FFD54F', true);
+            break;
+        }
+      }
+    });
+  }
+
+  /* -------------------------------------------------------------- update */
+  function stepPhysics(dt, live) {
+    var v = G.v, i, w;
+    var fuelDead = G.fuel <= 0;
+    G.input.boost = G.boostT > 0;
+    var inp = live && !fuelDead ? G.input : { gas: 0, brake: 0, boost: false };
+
+    acc += dt;
+    var n = 0;
+    while (acc >= SUB && n < 12) {
+      v.step(SUB, inp);
+      acc -= SUB; n++;
+    }
+    for (i = 0; i < 2; i++) {
+      w = v.wheels[i];
+      w.ang = (w.ang || 0) + w.omega * dt;
+    }
+    v.headLean = CG.approach(v.headLean || 0,
+      CG.clamp(-v.av * 0.05, -0.34, 0.34), 11, dt);
+  }
+
+  function updatePlay(dt) {
+    var v = G.v, i, w;
+    G.time += dt;
+
+    if (G.boostT > 0) G.boostT = Math.max(0, G.boostT - dt);
+    if (G.invuln > 0) G.invuln -= dt;
+
+    var wasAir = v.airTime;
+    stepPhysics(dt, true);
+
+    /* fuel */
+    var throttling = (G.input.gas > 0 || G.input.brake > 0) && G.fuel > 0;
+    G.fuel = Math.max(0, G.fuel - (throttling ? FUEL_DRIVE : FUEL_IDLE) * dt);
+    if (G.fuel <= 0) {
+      if (G.deadT === 0) FX.text(v.x, v.y - 100, 'OUT OF FUEL', '#EF5350', true);
+      G.deadT += dt;
+      var spd0 = Math.hypot(v.vx, v.vy);
+      if (G.deadT > 1.1 && spd0 < 45) gameOver('fuel');
+      else if (G.deadT > 8) gameOver('fuel');
+    }
+
+    /* distance + safe-ground memory for respawns */
+    G.dist = Math.max(G.dist, v.x / CG.PPM);
+    if (v.onGround && Math.abs(v.a) < 0.5) {
+      lastSafeT += dt;
+      if (lastSafeT > 0.25) { lastSafeX = v.x; lastSafeT = 0; }
+    }
+
+    /* tyre dust + exhaust smoke */
+    var skid = 0;
+    dustT -= dt; smokeT -= dt;
+    for (i = 0; i < 2; i++) {
+      w = v.wheels[i];
+      if (!w.contact) continue;
+      skid = Math.max(skid, w.skid);
+      if (w.skid > 0.22 && dustT <= 0) {
+        FX.dust(w.cpx, w.cpy, -w.slip * 0.25, v.vy, w.skid);
+        dustT = 0.05;
+      }
+    }
+    if (G.input.gas > 0 && G.fuel > 0 && smokeT <= 0) {
+      var ex = v.toWorld(V.exhaust.x, V.exhaust.y);
+      FX.smoke(ex.x, ex.y, v.vx - v.ca * 90, v.vy);
+      smokeT = G.boostT > 0 ? 0.035 : 0.075;
+    }
+
+    /* landings */
+    if (v.impact > 320) {
+      var hard = v.impact > 760;
+      A.sfx(hard ? 'thud' : 'land');
+      R.shake = Math.max(R.shake, CG.clamp(v.impact / 90, 3, 20));
+      for (i = 0; i < 2; i++) {
+        w = v.wheels[i];
+        if (w.contact) FX.dust(w.cpx, w.cpy, v.vx * 0.4, 0, 1);
+      }
+    }
+
+    /* trick rewards, banked on landing */
+    if (wasAir > 0.05 && v.airTime === 0) {
+      var spin = Math.abs(v.landedSpin || 0);
+      if (spin > 5.6) {
+        var flips = Math.floor(spin / (Math.PI * 2));
+        var bonus = 25 * Math.max(1, flips);
+        G.coins += bonus;
+        FX.text(v.x, v.y - 110, (flips > 1 ? flips + 'x FLIP! ' : 'FLIP! ') + '+' + bonus,
+                '#FFD54F', true);
+        A.sfx('flip');
+      } else if (wasAir > 1.05) {
+        G.coins += 12;
+        FX.text(v.x, v.y - 110, 'BIG AIR +12', '#4FC3F7', true);
+        A.sfx('flip');
+      }
+      v.landedSpin = 0;
+    }
+
+    collect(v);
+
+    if (v.crashed) {
+      if (G.invuln > 0) { v.crashed = false; v.crashReason = ''; v.upsideTime = 0; }
+      else if (G.safety > 0) useSafety();
+      else gameOver(v.crashReason);
+    }
+
+    A.drive(v.rpm, v.engineLoad, skid, G.fuel > 0);
+  }
+
+  /* ------------------------------------------------------------- camera */
+  function updateCamera(dt, snap) {
+    var v = G.v;
+    var spd = Math.hypot(v.vx, v.vy);
+    /* zoom so the jeep reads about a fifth of the screen width, easing out
+       as speed rises to keep the run-up visible */
+    var tz = CG.lerp(1.18, 0.95, CG.clamp(spd / 1000, 0, 1)) * (v.onGround ? 1 : 0.95);
+    var tx = v.x + 0.12 * R.W / tz + CG.clamp(v.vx * 0.28, -140, 260);
+    var ty = v.y - 0.05 * R.H / tz + CG.clamp(v.vy * 0.16, -80, 130);
+    if (snap) { R.cam.x = tx; R.cam.y = ty; R.cam.z = tz; return; }
+    R.cam.z = CG.approach(R.cam.z, tz, 2.2, dt);
+    R.cam.x = CG.approach(R.cam.x, tx, 7.5, dt);
+    R.cam.y = CG.approach(R.cam.y, ty, 5.0, dt);
+    R.shake = CG.approach(R.shake, 0, 7, dt);
+  }
+
+  /* ---------------------------------------------------------------- HUD */
+  function btn(id, x, y, w, h, r) {
+    var b = { id: id, x: x, y: y, w: w, h: h, r: r === undefined ? 14 : r };
+    buttons.push(b);
+    return b;
+  }
+
+  function iconBtn(id, cx, cy, rad, img, down) {
+    var c = R.ctx;
+    btn(id, cx - rad, cy - rad, rad * 2, rad * 2, rad);
+    c.save();
+    c.globalAlpha = down ? 0.95 : 0.72;
+    c.beginPath(); c.arc(cx, cy, rad, 0, CG.TAU);
+    c.fillStyle = down ? '#FFA000' : 'rgba(43,33,24,0.5)';
+    c.fill();
+    c.lineWidth = 3; c.strokeStyle = 'rgba(236,239,241,0.55)'; c.stroke();
+    var im = CG.img[img];
+    if (im) {
+      var s = rad * 1.15;
+      c.globalAlpha = 0.95;
+      c.drawImage(im, cx - s / 2, cy - s / 2, s, s);
+    }
+    c.restore();
+  }
+
+  function pedal(cx, cy, rad, dir, down) {
+    var c = R.ctx;
+    btn(dir > 0 ? 'gas' : 'brake', cx - rad, cy - rad, rad * 2, rad * 2, rad);
+    c.save();
+    c.globalAlpha = down ? 0.9 : 0.42;
+    c.beginPath(); c.arc(cx, cy, rad, 0, CG.TAU);
+    c.fillStyle = down ? (dir > 0 ? '#7CB342' : '#E53935') : 'rgba(43,33,24,0.5)';
+    c.fill();
+    c.lineWidth = 4; c.strokeStyle = 'rgba(236,239,241,0.6)'; c.stroke();
+    c.globalAlpha = down ? 1 : 0.8;
+    c.fillStyle = '#ECEFF1';
+    var k = rad * 0.34;
+    for (var i = 0; i < 2; i++) {
+      var ox = (i - 0.5) * k * 0.9 * dir;
+      c.beginPath();
+      c.moveTo(cx + ox - k * 0.35 * dir, cy - k);
+      c.lineTo(cx + ox + k * 0.45 * dir, cy);
+      c.lineTo(cx + ox - k * 0.35 * dir, cy + k);
+      c.closePath(); c.fill();
+    }
+    c.restore();
+  }
+
+  function drawHUD() {
+    var c = R.ctx, W = R.W;
+    /* distance + speed */
+    R.panel(16, 14, 214, 76, 18, 'rgba(43,33,24,0.42)');
+    R.text(Math.round(G.dist) + ' m', 30, 44, 34, '#FFF', 'left', 5);
+    R.text(Math.round(Math.hypot(G.v.vx, G.v.vy) / CG.PPM * 3.6) + ' km/h',
+           30, 74, 18, '#B3E5FC', 'left', 4);
+    if (G.best > 0) R.text('best ' + Math.round(G.best) + ' m', 148, 74, 15, '#FFE082', 'left', 3);
+
+    /* coins */
+    R.panel(16, 100, 140, 44, 14, 'rgba(43,33,24,0.42)');
+    var ci = CG.img.coin;
+    if (ci) c.drawImage(ci, 0, 0, CG.SHEETS.coin.frame, CG.SHEETS.coin.frame, 24, 108, 28, 28);
+    R.text(String(G.coins), 60, 123, 24, '#FFD54F', 'left', 4);
+
+    /* saves */
+    if (G.safety > 0) {
+      var hi = CG.img.heart;
+      for (var i = 0; i < G.safety; i++) {
+        if (hi) c.drawImage(hi, 22 + i * 30, 152, 26, 26);
+      }
+    }
+
+    /* fuel */
+    var fw = 210, fx = W - fw - 20, fy = 22;
+    R.panel(fx - 42, fy - 8, fw + 54, 40, 16, 'rgba(43,33,24,0.42)');
+    var fi = CG.img.fuel;
+    if (fi) c.drawImage(fi, fx - 36, fy - 4, 28, 30);
+    var k = G.fuel / FUEL_MAX;
+    R.roundRect(fx, fy + 2, fw, 20, 10);
+    c.fillStyle = 'rgba(43,33,24,0.55)'; c.fill();
+    var col = k > 0.45 ? '#7CB342' : k > 0.2 ? '#FFA000' : '#E53935';
+    if (k < 0.2 && Math.sin(G.time * 12) < 0) col = '#FFCDD2';
+    if (k > 0.005) {
+      R.roundRect(fx + 2, fy + 4, Math.max(6, (fw - 4) * k), 16, 8);
+      c.fillStyle = col; c.fill();
+    }
+
+    /* top-right buttons */
+    iconBtn('pause', W - 46, 84, 28, 'iconPause', false);
+    iconBtn('mute', W - 112, 84, 28, G.muted ? 'soundOff' : 'soundOn', false);
+
+    /* pedals — only while driving, so they cannot be mistaken for live
+       controls on the pause or game-over screens */
+    if (G.state === 'play') {
+      var py = R.H - 96, pr = 62;
+      pedal(104, py, pr, -1, G.input.brake > 0);
+      pedal(W - 104, py, pr, 1, G.input.gas > 0);
+    }
+
+    /* boost flash */
+    if (G.boostT > 0) {
+      c.save();
+      c.globalAlpha = 0.16 + 0.1 * Math.sin(G.time * 22);
+      var g = c.createLinearGradient(0, 0, R.W, 0);
+      g.addColorStop(0, '#FFD54F'); g.addColorStop(0.5, 'rgba(255,213,79,0)');
+      g.addColorStop(1, '#FFD54F');
+      c.fillStyle = g; c.fillRect(0, 0, R.W, R.H);
+      c.restore();
+    }
+  }
+
+  function bigButton(id, cx, cy, w, h, label, colour, icon) {
+    var c = R.ctx;
+    btn(id, cx - w / 2, cy - h / 2, w, h, h / 2);
+    c.save();
+    R.roundRect(cx - w / 2, cy - h / 2 + 5, w, h, h / 2);
+    c.fillStyle = 'rgba(43,33,24,0.55)'; c.fill();
+    R.roundRect(cx - w / 2, cy - h / 2, w, h, h / 2);
+    c.fillStyle = colour; c.fill();
+    c.lineWidth = 4; c.strokeStyle = '#2B2118'; c.stroke();
+    var tx = cx, im = icon && CG.img[icon];
+    if (im) {
+      var s = h * 0.6;
+      c.drawImage(im, cx - w / 2 + 16, cy - s / 2, s, s);
+      tx = cx + 14;
+    }
+    R.text(label, tx, cy + 1, h * 0.42, '#FFF', 'center', 5);
+    c.restore();
+  }
+
+  function dim(alpha) {
+    var c = R.ctx;
+    c.fillStyle = 'rgba(20,14,10,' + alpha + ')';
+    c.fillRect(0, 0, R.W, R.H);
+  }
+
+  function drawTitle() {
+    var c = R.ctx, W = R.W, H = R.H;
+    dim(0.3);
+    var cy = H * 0.19;
+    R.text('CLIMB', W / 2, cy, 96, '#FFD54F', 'center', 12);
+    R.text('endless hill racer', W / 2, cy + 60, 24, '#E1F5FE', 'center', 5);
+    bigButton('play', W / 2, H * 0.735, 300, 86, 'PLAY', '#7CB342', 'iconPlay');
+    R.panel(W / 2 - 170, H * 0.735 + 64, 340, 50, 16, 'rgba(43,33,24,0.45)');
+    R.text('BEST ' + Math.round(G.best) + ' m', W / 2 - 78, H * 0.735 + 89, 24, '#FFE082', 'center', 4);
+    var ci = CG.img.coin;
+    if (ci) c.drawImage(ci, 0, 0, CG.SHEETS.coin.frame, CG.SHEETS.coin.frame,
+                        W / 2 + 44, H * 0.735 + 75, 28, 28);
+    R.text(String(Math.round(G.bank)), W / 2 + 82, H * 0.735 + 89, 24, '#FFD54F', 'left', 4);
+    R.text('hold right / D  =  gas      left / A  =  brake', W / 2, H - 16, 18,
+           'rgba(236,239,241,0.85)', 'center', 4);
+    iconBtn('mute', W - 46, 46, 26, G.muted ? 'soundOff' : 'soundOn', false);
+  }
+
+  function drawPaused() {
+    var W = R.W, H = R.H;
+    dim(0.55);
+    R.text('PAUSED', W / 2, H * 0.26, 62, '#FFF', 'center', 8);
+    bigButton('resume', W / 2, H * 0.46, 300, 80, 'RESUME', '#7CB342', 'iconPlay');
+    bigButton('retry', W / 2, H * 0.62, 300, 72, 'RESTART', '#FFA000', 'iconRestart');
+    bigButton('home', W / 2, H * 0.77, 300, 72, 'QUIT', '#607D8B', 'iconHome');
+  }
+
+  var REASON = {
+    head: 'OUCH! HEAD FIRST',
+    flipped: 'FLIPPED OVER',
+    fuel: 'OUT OF FUEL'
+  };
+
+  function drawOver() {
+    var c = R.ctx, W = R.W, H = R.H;
+    dim(0.55);
+    R.text(REASON[G.reason] || 'CRASHED', W / 2, H * 0.2, 46, '#EF5350', 'center', 7);
+    R.text(Math.round(G.dist) + ' m', W / 2, H * 0.33, 84, '#FFF', 'center', 9);
+    if (G.newBest) R.text('NEW BEST!', W / 2, H * 0.42, 30, '#FFD54F', 'center', 6);
+    else R.text('best ' + Math.round(G.best) + ' m', W / 2, H * 0.42, 22, '#FFE082', 'center', 4);
+    var ci = CG.img.coin;
+    if (ci) c.drawImage(ci, 0, 0, CG.SHEETS.coin.frame, CG.SHEETS.coin.frame, W / 2 - 60, H * 0.48, 32, 32);
+    R.text('+' + G.coins, W / 2 - 18, H * 0.48 + 16, 28, '#FFD54F', 'left', 5);
+    bigButton('retry', W / 2, H * 0.66, 320, 86, 'PLAY AGAIN', '#7CB342', 'iconRestart');
+    bigButton('home', W / 2, H * 0.81, 240, 66, 'HOME', '#607D8B', 'iconHome');
+  }
+
+  /* --------------------------------------------------------------- draw */
+  function draw(dt) {
+    var c = R.ctx;
+    buttons.length = 0;
+    R.begin();
+    R.drawBackground();
+    R.drawProps(true);
+    R.drawTerrain();
+    R.drawProps(false);
+    R.drawPickups(G.time);
+    R.drawFX(false);
+    R.drawVehicle(G.v, dt);
+    R.drawFX(true);
+    R.drawForeground();
+    R.drawTexts();
+
+    if (G.state === 'title') drawTitle();
+    else {
+      drawHUD();
+      if (G.state === 'paused') drawPaused();
+      else if (G.state === 'over') drawOver();
+    }
+  }
+
+  /* --------------------------------------------------------------- loop */
+  var last = 0, emaMs = 8, adjustAt = 0, showStats = false;
+
+  /* If frames run long, render fewer pixels rather than dropping frames. */
+  function autoQuality(now, ms) {
+    emaMs += (ms - emaMs) * 0.1;
+    if (now < adjustAt) return;
+    if (emaMs > 21 && R.quality > 0.56) {
+      adjustAt = now + 1600; R.setQuality(R.quality - 0.15); emaMs = 12;
+    } else if (emaMs < 10.5 && R.quality < 1) {
+      adjustAt = now + 3000; R.setQuality(R.quality + 0.15); emaMs = 12;
+    }
+  }
+
+  function frame(ts) {
+    var t0 = performance.now();
+    var dt = last ? Math.min(0.05, (ts - last) / 1000) : 0.016;
+    last = ts;
+    if (G.state === 'play') {
+      updatePlay(dt);
+      updateCamera(dt, false);
+      FX.update(dt);
+    } else if (G.state === 'title') {
+      G.time += dt;
+      stepPhysics(dt, false);
+      updateCamera(dt * 0.6, false);
+      FX.update(dt);
+    } else if (G.state === 'over') {
+      G.time += dt;
+      stepPhysics(dt, false);
+      updateCamera(dt, false);
+      FX.update(dt);
+      A.drive(0, 0, 0, false);
+    }
+    CG.World.prune(R.cam.x - R.W / R.cam.z);
+    draw(dt);
+    if (showStats) {
+      R.panel(R.W / 2 - 108, 8, 216, 30, 10, 'rgba(43,33,24,0.6)');
+      R.text(emaMs.toFixed(1) + ' ms   q' + R.quality.toFixed(2) +
+             '   ' + Math.round(1000 / Math.max(0.1, emaMs)) + ' fps',
+             R.W / 2, 23, 17, '#AED581', 'center', 3);
+    }
+    autoQuality(t0, performance.now() - t0);
+    requestAnimationFrame(frame);
+  }
+
+  /* -------------------------------------------------------------- input */
+  function hit(b, x, y) {
+    if (b.r >= b.h / 2) {                      // circular button
+      var cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+      return Math.hypot(x - cx, y - cy) <= b.w / 2 + 6;
+    }
+    return x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h;
+  }
+
+  function press(id) {
+    A.sfx('click');
+    switch (id) {
+      case 'play': case 'retry': G.newRun(); break;
+      case 'home': G.toTitle(); break;
+      case 'pause': if (G.state === 'play') G.state = 'paused'; break;
+      case 'resume': if (G.state === 'paused') G.state = 'play'; break;
+      case 'mute':
+        G.muted = !G.muted; A.setMuted(G.muted); save(); break;
+    }
+  }
+
+  function toLogical(e) {
+    var r = R.canvas.getBoundingClientRect();
+    return { x: (e.clientX - r.left) / r.width * R.W, y: (e.clientY - r.top) / r.height * R.H };
+  }
+
+  function onDown(e) {
+    A.init(); A.resume();
+    var p = toLogical(e), i, b;
+    R.canvas.setPointerCapture && R.canvas.setPointerCapture(e.pointerId);
+    /* UI first */
+    for (i = buttons.length - 1; i >= 0; i--) {
+      b = buttons[i];
+      if (b.id === 'gas' || b.id === 'brake') continue;
+      if (hit(b, p.x, p.y)) { pointers[e.pointerId] = b.id; press(b.id); return; }
+    }
+    if (G.state !== 'play') {
+      /* a tap anywhere on the title screen starts a run */
+      if (G.state === 'title') { pointers[e.pointerId] = 'play'; press('play'); }
+      return;
+    }
+    /* whole bottom half is a pedal — forgiving on touch */
+    var side = p.x > R.W / 2 ? 'gas' : 'brake';
+    pointers[e.pointerId] = side;
+    G.input[side] = 1;
+  }
+
+  function onUp(e) {
+    var id = pointers[e.pointerId];
+    delete pointers[e.pointerId];
+    if (id === 'gas' || id === 'brake') {
+      /* only release if no other pointer still holds that side */
+      for (var k in pointers) if (pointers[k] === id) return;
+      G.input[id] = 0;
+    }
+  }
+
+  function syncKeys() {
+    G.input.gas = (keys.right || keys.space) ? 1 : 0;
+    G.input.brake = keys.left ? 1 : 0;
+  }
+
+  function onKey(e, dn) {
+    var k = e.key;
+    if (k === 'ArrowRight' || k === 'd' || k === 'D') keys.right = dn;
+    else if (k === 'ArrowLeft' || k === 'a' || k === 'A') keys.left = dn;
+    else if (k === ' ' || k === 'ArrowUp' || k === 'w' || k === 'W') keys.space = dn;
+    else if (dn && (k === 'p' || k === 'P' || k === 'Escape')) {
+      press(G.state === 'paused' ? 'resume' : 'pause');
+    } else if (dn && (k === 'r' || k === 'R')) {
+      if (G.state !== 'title') press('retry');
+    } else if (dn && (k === 'm' || k === 'M')) press('mute');
+    else if (dn && (k === 'Enter') && G.state !== 'play') {
+      press(G.state === 'title' ? 'play' : 'retry');
+    } else return;
+    if (dn) { A.init(); A.resume(); }
+    e.preventDefault();
+    syncKeys();
+  }
+
+  /* --------------------------------------------------------------- boot */
+  /* Dev hooks: ?seed=123 replays an exact track, ?demo=1 auto-drives. */
+  function urlOpts() {
+    var o = {}, q = (location.search || '').replace(/^\?/, '').split('&');
+    for (var i = 0; i < q.length; i++) {
+      var kv = q[i].split('=');
+      if (kv[0]) o[kv[0]] = kv.length > 1 ? decodeURIComponent(kv[1]) : '1';
+    }
+    return o;
+  }
+
+  CG.boot = function () {
+    var canvas = document.getElementById('c');
+    R.attach(canvas);
+    load();
+    A.muted = G.muted;
+
+    window.addEventListener('resize', function () { R.resize(); });
+    window.addEventListener('orientationchange', function () { setTimeout(R.resize, 120); });
+    canvas.addEventListener('pointerdown', onDown);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    window.addEventListener('keydown', function (e) { onKey(e, true); });
+    window.addEventListener('keyup', function (e) { onKey(e, false); });
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden && G.state === 'play') G.state = 'paused';
+    });
+
+    var fill = document.getElementById('fill'), boot = document.getElementById('boot');
+    var msg = document.getElementById('bootmsg');
+
+    /* Never fail to a blank canvas — say what broke, on screen. */
+    window.addEventListener('error', function (e) {
+      boot.classList.remove('gone');
+      boot.style.display = 'flex';
+      msg.textContent = 'ERROR: ' + (e.message || e.type) +
+        (e.lineno ? ' (line ' + e.lineno + ')' : '');
+    });
+
+    var opts = urlOpts();
+    showStats = !!opts.stats;
+    if (opts.q) R.setQuality(+opts.q);
+    CG.loadAssets(
+      function (p) { fill.style.width = Math.round(p * 100) + '%'; },
+      function (failed) {
+        if (failed.length) msg.textContent = failed.length + ' asset(s) missing';
+        G.toTitle();
+        if (opts.demo || opts.seed) {
+          G.newRun();
+          if (opts.seed) {
+            G.seed = (+opts.seed) | 0 || 1;
+            CG.Terrain.setSeed(G.seed);
+            CG.World.init(G.seed);
+            G.v.reset(160);
+            R.cam.x = G.v.x; R.cam.y = G.v.y;
+          }
+          if (opts.demo) G.input.gas = 1;
+        }
+        requestAnimationFrame(frame);
+        setTimeout(function () {
+          boot.classList.add('gone');
+          setTimeout(function () { boot.style.display = 'none'; }, 500);
+        }, failed.length ? 900 : 180);
+      }
+    );
+  };
+})(CG);
+
+CG.boot();
+</script>
+</body>
+</html>

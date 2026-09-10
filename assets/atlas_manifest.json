@@ -1,0 +1,44 @@
+{
+  "driver_head": {
+    "size": 706,
+    "pivot": "frame centre = neck joint"
+  },
+  "coin_sheet": {
+    "frames": 8,
+    "frame": 192
+  },
+  "driver_body": {
+    "w": 454,
+    "h": 385,
+    "collar": [
+      76,
+      13
+    ],
+    "hip": [
+      55,
+      170
+    ]
+  },
+  "dust_sheet": {
+    "frames": 5,
+    "frame": 172,
+    "ramp": [
+      1.0,
+      0.85,
+      0.62,
+      0.38,
+      0.15
+    ]
+  },
+  "smoke_sheet": {
+    "frames": 5,
+    "frame": 152,
+    "ramp": [
+      1.0,
+      0.85,
+      0.62,
+      0.38,
+      0.15
+    ]
+  }
+}
