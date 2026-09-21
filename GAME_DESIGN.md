@@ -12,6 +12,10 @@ goal — a racer with something to finish.
 **Now:** the same stages, but the route is cut by **chasms**, and the game is about the
 **distance formula**. At each chasm:
 
+*(2026-09-21: the player's flow is endless-only — see "Endless gets chasms too" below —
+but everything in this section still describes the mechanic itself, which endless now
+runs as well.)*
+
 1. The car is eased to a stop on the near lip (the player loses the pedals ~16 m out and
    the driver brakes; a fast arrival meets an invisible barrier in a cloud of dust).
 2. A coordinate grid fades in behind the scenery — one unit is 72 world px, a frosted
@@ -218,6 +222,30 @@ The fuel margin curve is the difficulty ramp nobody sees: 1.87× on stage 1 mean
 never a thought while you are learning; 1.28× on stage 8 means two failed attempts at a
 section and you are driving on fumes.
 
+## Endless gets chasms too
+
+Endless is a `G.track`-free noise run, so it never reaches `CG.Stages`' authored chasms.
+It now gets the same mechanic on its own terms, via `CG.Endless` (index.html, right after
+the GAPS module): chasms sit at deterministic, seeded, jittered x-slots — the same
+technique `World.features` uses for its ramps — spaced to take roughly 10-20s at a typical
+cruising speed, so placement stays a pure function of x rather than a stateful clock, same
+as everything else in the file.
+
+Every endless gap is **horizontal** (`[0, 0, dx, 0]`): both lips sit at the same height,
+so the spliced part enters and leaves the noise at the height it found, by construction —
+no elevation-trend bookkeeping needed, and the distance is automatically a whole number,
+same as curriculum stage 1. `dx` is drawn from a small pool early (`[3,4,5]`), widening
+after the first few chasms (`[3..10]`), never repeating the previous gap's distance.
+
+The auto-brake now also plays a one-shot `'brake'` cue (`A.sfx`) the instant it takes
+over, layered on the existing continuous tyre-skid audio.
+
+`node tools/shoot_endless_gaps.js [seed]` is `shoot_gaps.js`'s endless counterpart: drives
+two chasms back to back (the exact plank across the first, a deliberate wrong answer and
+its reset on the second, then the right one), and checks the endless-specific risks — no
+`G.track`, the run never mistakes a chasm for a stage finish, consecutive chasms land a
+sane distance apart.
+
 ## What persists
 
 `localStorage` key `cg_prog`: `{ "<stage id>": { s: stars, t: best time, c: best coins } }`,
@@ -244,8 +272,8 @@ chasm sequence or the renderer; the bot cannot see.
   placement is still chunk-random. Moving the high-value pickups onto the pathway the way
   the coin arcs already are would make the goals legible.
 - **Sampled audio.** The slots and the sources are in [docs/AUDIO.md](docs/AUDIO.md);
-  nothing has been downloaded yet. Four new synthesised cues (`plank`, `slam`, `go`,
-  `wrong`) want samples too.
+  nothing has been downloaded yet. Five new synthesised cues (`plank`, `slam`, `go`,
+  `wrong`, `brake`) want samples too.
 - **Mountain theme.** The reference art is an alpine canyon (pines, snow peaks, a river
   below). The chasm itself already renders as one — vector rock faces with strata on both
   walls, a river-blue valley floor fading up into haze, no visible pit floor — but the

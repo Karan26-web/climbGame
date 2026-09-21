@@ -162,6 +162,18 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
         if (part && part.exact) return this.track.elevation(x);
         return this.track.elevation(x) + CG.vnoise(x / 74, 67 + this.seed * 7919) * 3;
       }
+      /* Endless splices chasms into the noise — see the ENDLESS GAPS module.
+         Outside every chasm's window (and its short blend margin) this falls
+         straight through to rawElevation, same as always. */
+      var patch = CG.Endless && CG.Endless.sample(x);
+      if (patch !== null && patch !== undefined) return patch;
+      return this.rawElevation(x);
+    },
+
+    /* The plain noise formula, with no chasm splicing — what elevation() falls
+       back to outside any chasm window, and what a chasm's own blend margin
+       joins back into. Grows rougher with distance. */
+    rawElevation: function (x) {
       var sd = this.seed * 7919;
       var diff = 1 - Math.exp(-Math.max(0, x) / 7000);   // 0 -> 1 difficulty ramp
       var h = 0;
@@ -506,24 +518,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       var part = { name: name, x0: x, x1: x + p.len, len: p.len, y0: y,
                    h: p.h, tags: p.tags || '', cp: false, index: parts.length };
       if (name === 'chasm') {
-        /* Everything the question needs, resolved to world space once. World y
-           grows downward; grid y grows upward, hence the sign flips. */
-        var U = CG.UNIT, c = entry.c;
-        var ax = x + p.gapX[0], bx = x + p.gapX[1];
-        var ay = CG.BASE_Y - y, by = CG.BASE_Y - (y + p.rise);
         part.exact = true;                       // no fine noise: lips sit on the grid
-        part.gap = {
-          index: chasms.length, part: parts.length,
-          a: [c[0], c[1]], b: [c[2], c[3]],
-          ax: ax, ay: ay, bx: bx, by: by,
-          ox: ax - c[0] * U, oy: ay + c[1] * U,  // grid origin in world space
-          floorY: CG.BASE_Y - (y + p.floor),
-          stopX: ax - CG.CHASM.STOP,             // where the car is held
-          armX: ax - CG.CHASM.ARM,               // where the auto-brake takes over
-          D: Math.hypot(c[2] - c[0], c[3] - c[1]),
-          solved: false
-        };
-        part.gap.q = CG.Gaps.question(part.gap);
+        part.gap = CG.Gaps.resolve(x, y, entry.c, p, chasms.length);
+        part.gap.part = parts.length;
         chasms.push(part.gap);
       }
       if (cpNext) {
@@ -606,6 +603,31 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     return { dx: dx, dy: dy, sq: sq, D: D };
   };
 
+  /* Resolve one chasm spec into the full gap object the game, the renderer
+     and the bot all share — everything the question needs, in world space,
+     computed once. `x, y` are the part's own origin (world y grows downward,
+     grid y grows upward, hence the sign flips); `p` is the PARTS.chasm build
+     (gives gapX/rise/floor); `index` is only used to label the gap. Shared by
+     the stage builder (Track.build) and endless (CG.Endless) so the geometry
+     math has one home. */
+  Gaps.resolve = function (x, y, spec, p, index) {
+    var U = CG.UNIT;
+    var ax = x + p.gapX[0], bx = x + p.gapX[1];
+    var ay = CG.BASE_Y - y, by = CG.BASE_Y - (y + p.rise);
+    var gap = {
+      index: index, a: [spec[0], spec[1]], b: [spec[2], spec[3]],
+      ax: ax, ay: ay, bx: bx, by: by,
+      ox: ax - spec[0] * U, oy: ay + spec[1] * U,   // grid origin in world space
+      floorY: CG.BASE_Y - (y + p.floor),
+      stopX: ax - CG.CHASM.STOP,               // where the car is held
+      armX: ax - CG.CHASM.ARM,                 // where the auto-brake takes over
+      D: Math.hypot(spec[2] - spec[0], spec[3] - spec[1]),
+      solved: false
+    };
+    gap.q = Gaps.question(gap);
+    return gap;
+  };
+
   /* The plank a choice of `len` units produces, as a driving surface
      {x0,y0,x1,y1} (its top edge) plus `kind`. */
   Gaps.plankFor = function (gap, len) {
@@ -674,6 +696,118 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   Gaps.FAIL_AFTER = 1.15;
   Gaps.failed = function (v, gap, since) {
     return v.crashed || v.y > Math.max(gap.ay, gap.by) + 130 || since > Gaps.FAIL_AFTER;
+  };
+})(CG);
+
+/* =============================== ENDLESS GAPS ================================
+   Endless mode gets the same chasm / distance-formula mechanic stage mode has
+   (the GAPS module above) spliced into the noise terrain instead of an
+   authored pathway. Chasms sit at deterministic, seeded, jittered slots along
+   x — the same technique World.features uses for its ramps — spaced to take
+   roughly 10-20s at a typical cruising speed, so placement stays a pure
+   function of x like everything else here rather than a stateful clock.
+   Every endless gap is HORIZONTAL (both lips the same height): the noise on
+   both sides then needs no elevation-trend bookkeeping — the spliced part
+   enters and leaves at the same height it found, by construction — and the
+   distance is automatically a whole number, same as curriculum stage 1.     */
+(function (CG) {
+  'use strict';
+
+  var E = CG.Endless = {};
+
+  E.SPACING = 10500;       // world px between chasm slots (~10-20s at ~45-55 km/h)
+  E.JITTER = 3500;         // +/- offset from the nominal slot centre
+  E.FIRST = 3400;          // first slot centre — soon after the start, like stage 1
+  E.ENSURE_AHEAD = 4000;   // resolve this far past the car — clears the render window
+  E.BLEND = 220;           // px of smoothstep at each end, into/out of live noise
+
+  var DX_EARLY = [3, 4, 5];
+  var DX_LATE = [3, 4, 5, 6, 7, 8, 9, 10];
+
+  E.reset = function (seed) {
+    E.seed = seed | 0 || 1;
+    E.chasms = [];
+    E.cache = {};
+  };
+  E.reset(1);
+
+  function dxFor(k, salt, lastDx) {
+    var pool = k < 3 ? DX_EARLY : DX_LATE;
+    var idx = Math.floor(CG.hash1(k, salt + 1) * pool.length);
+    var dx = pool[idx];
+    if (dx === lastDx && pool.length > 1) dx = pool[(idx + 1) % pool.length];
+    return dx;
+  }
+
+  /* Resolve slot k into a gap object, memoized. A pure function of (seed, k)
+     alone — never reads live game state — so it is safe to call from terrain
+     sampling (which must stay consistent regardless of how far the game loop
+     has planned ahead) as well as from the game loop's own look-ahead. */
+  function slot(k) {
+    var g = E.cache[k];
+    if (g) return g;
+    var salt = (E.seed * 7919 + k * 104729) | 0;
+    var x0 = E.FIRST + k * E.SPACING + (CG.hash1(k, salt) * 2 - 1) * E.JITTER;
+    if (k === 0) x0 = Math.max(x0, 1400);
+    var lastDx = k > 0 ? slot(k - 1).dx : 0;
+    var dx = dxFor(k, salt, lastDx);
+    var p = CG.PARTS.chasm(0, CG.rng(salt >>> 0), [0, 0, dx, 0]);
+    var base = CG.Terrain.rawElevation(x0);        // frozen baseline this slot joins from
+    var gap = CG.Gaps.resolve(x0, base, [0, 0, dx, 0], p, k);
+    gap.dx = dx; gap.slotX0 = x0; gap.slotLen = p.len; gap.slotBase = base; gap.slotPart = p;
+    E.cache[k] = gap;
+    E.chasms.push(gap);
+    return gap;
+  }
+
+  /* Resolve every slot up to uptoX + ENSURE_AHEAD, so nextChasm() always has
+     the next one ready before the car needs it. Call once a frame. */
+  E.ensure = function (uptoX) {
+    var k = E.chasms.length;
+    while (E.FIRST + k * E.SPACING - E.JITTER <= uptoX + E.ENSURE_AHEAD) { slot(k); k++; }
+  };
+
+  function slotHeight(g, x) {
+    var t = (x - g.slotX0) / g.slotLen;
+    if (t >= 0 && t <= 1) return g.slotBase + g.slotPart.h(t);
+    var atStart = t < 0, edgeX = atStart ? g.slotX0 : g.slotX0 + g.slotLen;
+    var edgeH = g.slotBase + g.slotPart.h(atStart ? 0 : 1);
+    var raw = CG.Terrain.rawElevation(x);
+    var k = atStart ? CG.smoothstep(edgeX - E.BLEND, edgeX, x)
+                     : 1 - CG.smoothstep(edgeX, edgeX + E.BLEND, x);
+    return CG.lerp(raw, edgeH, k);
+  }
+
+  /* Terrain height at x, or null outside every chasm's window (including its
+     blend margin) — the caller falls through to plain noise. Only ever
+     checks the (at most three) slots whose nominal window could reach x. */
+  E.sample = function (x) {
+    var k0 = Math.max(0, Math.floor((x - E.FIRST) / E.SPACING) - 1), k, g;
+    for (k = k0; k <= k0 + 2; k++) {
+      g = slot(k);
+      if (x >= g.slotX0 - E.BLEND && x <= g.slotX0 + g.slotLen + E.BLEND) return slotHeight(g, x);
+    }
+    return null;
+  };
+
+  /* Already-resolved chasm covering x, ignoring the blend margin — for
+     World.blocked, which must not force a slot to resolve just to check it. */
+  E.at = function (x) {
+    var k0 = Math.max(0, Math.floor((x - E.FIRST) / E.SPACING) - 1), k, g;
+    for (k = k0; k <= k0 + 2; k++) {
+      g = E.cache[k];
+      if (g && x >= g.stopX - 200 && x <= g.bx + 130) return g;
+    }
+    return null;
+  };
+
+  /* Every resolved chasm whose slot could touch [x0, x1) — a chunk is far
+     narrower than the spacing between chasms, so this is a couple of lookups,
+     never a scan of the whole session's chasms. For World.build's dressing. */
+  E.forRange = function (x0, x1, cb) {
+    var k0 = Math.max(0, Math.floor((x0 - E.FIRST) / E.SPACING) - 1);
+    var k1 = Math.floor((x1 - E.FIRST) / E.SPACING) + 1, k, g;
+    for (k = k0; k <= k1; k++) { g = E.cache[k]; if (g) cb(g); }
   };
 })(CG);
 
@@ -1345,6 +1479,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       case 'go':    ping(660, t, 0.1, 0.16, 'triangle'); ping(990, t + 0.1, 0.22, 0.18, 'triangle'); break;
       /* a wrong plank revealing itself */
       case 'wrong': ping(300, t, 0.18, 0.2, 'square'); ping(210, t + 0.14, 0.3, 0.2, 'square'); break;
+      /* the auto-brake grabbing hard at a chasm: a tyre screech and a thud */
+      case 'brake': burst(t, 0.55, 3400, 0.28, 4); ping(130, t, 0.4, 0.22, 'sawtooth'); break;
     }
   };
 })(CG);
@@ -1396,8 +1532,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
        bush on the lip hides the plotted point, a coin in the pit is a lure. */
     blocked: function (x) {
       var tr = this.track, p = tr && tr.at(x);
-      if (!p || !p.gap) return false;
-      return x > p.gap.stopX - 200 && x < p.gap.bx + 130;
+      if (p && p.gap) return x > p.gap.stopX - 200 && x < p.gap.bx + 130;
+      if (!tr && CG.Endless.at(x)) return true;
+      return false;
     },
 
     build: function (ci) {
@@ -1437,6 +1574,31 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
          side of the risky ones, and every checkpoint carries its own fuel can
          so the fuel budget is a route decision rather than a lottery. */
       var tr = this.track, k, cx, part, px, py, f;
+      /* ---- chasm dressing: a warning sign where the car will be held, a
+         rock on each lip so the drop reads from a distance, and three coins
+         on the far side as the reason to get across. Shared by stage
+         (tr.chasms) and endless (CG.Endless), which resolve gap objects of
+         the same shape. ---- */
+      function dressChasm(g) {
+        var s2, i2, px2;
+        if (g.stopX - 330 >= x0 && g.stopX - 330 < x0 + CHUNK) {
+          s2 = t.gsample(g.stopX - 330);
+          props.push({ kind: 'signpost', x: g.stopX - 330, y: s2.y, ang: 0, h: 78,
+                       flip: false, back: true, label: 'MIND THE GAP' });
+        }
+        if (g.ax - 34 >= x0 && g.ax - 34 < x0 + CHUNK) {
+          props.push({ kind: 'rock', x: g.ax - 34, y: g.ay, ang: 0, h: 40, flip: false, back: true });
+        }
+        if (g.bx + 40 >= x0 && g.bx + 40 < x0 + CHUNK) {
+          props.push({ kind: 'rock', x: g.bx + 40, y: g.by, ang: 0, h: 44, flip: true, back: true });
+          props.push({ kind: 'bush', x: g.bx + 96, y: g.by, ang: 0, h: 56, flip: false, back: true });
+        }
+        for (i2 = 0; i2 < 3; i2++) {
+          px2 = g.bx + 180 + i2 * 56;
+          if (px2 >= x0 && px2 < x0 + CHUNK) add('coin', px2, g.by - 60);
+        }
+      }
+      if (!tr) CG.Endless.forRange(x0 - 400, x0 + CHUNK + 400, dressChasm);
       if (tr) {
         for (k = 0; k < tr.cps.length; k++) {
           cx = tr.cps[k];
@@ -1446,28 +1608,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
                        flip: false, back: false, marker: k + 1, cp: true });
           add('fuel', cx + 150, t.ground(cx + 150) - 56);
         }
-        /* ---- chasm dressing: a warning sign where the car will be held, a
-           rock on each lip so the drop reads from a distance, and three coins
-           on the far side as the reason to get across ---- */
-        for (k = 0; k < tr.chasms.length; k++) {
-          var g = tr.chasms[k];
-          if (g.stopX - 330 >= x0 && g.stopX - 330 < x0 + CHUNK) {
-            s = t.gsample(g.stopX - 330);
-            props.push({ kind: 'signpost', x: g.stopX - 330, y: s.y, ang: 0, h: 78,
-                         flip: false, back: true, label: 'MIND THE GAP' });
-          }
-          if (g.ax - 34 >= x0 && g.ax - 34 < x0 + CHUNK) {
-            props.push({ kind: 'rock', x: g.ax - 34, y: g.ay, ang: 0, h: 40, flip: false, back: true });
-          }
-          if (g.bx + 40 >= x0 && g.bx + 40 < x0 + CHUNK) {
-            props.push({ kind: 'rock', x: g.bx + 40, y: g.by, ang: 0, h: 44, flip: true, back: true });
-            props.push({ kind: 'bush', x: g.bx + 96, y: g.by, ang: 0, h: 56, flip: false, back: true });
-          }
-          for (i = 0; i < 3; i++) {
-            px = g.bx + 180 + i * 56;
-            if (px >= x0 && px < x0 + CHUNK) add('coin', px, g.by - 60);
-          }
-        }
+        for (k = 0; k < tr.chasms.length; k++) dressChasm(tr.chasms[k]);
         part = tr.at(x0);
         for (k = part ? part.index : tr.parts.length; k < tr.parts.length; k++) {
           part = tr.parts[k];
@@ -2511,15 +2652,21 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
              bottom: R.sy(gap.oy - minGY * U) + 0.5 * U * z };
   };
 
-  R.drawGrid = function (gap, alpha) {
+  R.drawGrid = function (gap, alpha, axisAlpha) {
     if (!gap || alpha <= 0.01) return;
     var c = R.ctx, z = R.cam.z, U = CG.UNIT, b = R.gridBox(gap);
     var left = b.left, right = b.right, top = b.top, bottom = b.bottom, i, x, y;
     c.save();
     c.globalAlpha = alpha;
-    /* the frosted pane */
+    /* The frosted pane, with the ravine punched out of it. The pane is there
+       to hold the plotted points legible against the sky; laid over the drop
+       as well it washed the one dramatic thing on screen out flat. */
+    var pitL = Math.max(left, R.sx(gap.ax)), pitR = Math.min(right, R.sx(gap.bx));
+    var pitT = Math.max(top, R.sy(Math.min(gap.ay, gap.by)));
     R.roundRect(left, top, right - left, bottom - top, 18 * z);
-    c.fillStyle = 'rgba(190,222,250,0.46)'; c.fill();
+    if (pitR > pitL && pitT < bottom) c.rect(pitL, pitT, pitR - pitL, bottom - pitT);
+    c.fillStyle = 'rgba(190,222,250,0.46)'; c.fill('evenodd');
+    R.roundRect(left, top, right - left, bottom - top, 18 * z);
     c.lineWidth = 2.5; c.strokeStyle = 'rgba(255,255,255,0.75)'; c.stroke();
     c.save();
     R.roundRect(left, top, right - left, bottom - top, 18 * z); c.clip();
@@ -2536,6 +2683,10 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     }
     c.stroke();
     c.restore();
+    /* The axes arrive a beat after the pane — see the reveal in gapControl. */
+    var aa = axisAlpha === undefined ? 1 : axisAlpha;
+    if (aa <= 0.01) { c.restore(); return; }
+    c.globalAlpha = alpha * aa;
     /* THE NUMBER LINE: a thick orange x-axis and blue y-axis, arrowheads at
        both ends just past the pane, a tick every unit, a number every two */
     var ax = R.sx(gap.ox), ay = R.sy(gap.oy), arrow = 16 * z, tick = 7 * z, big = 11 * z;
@@ -2608,10 +2759,20 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     c.restore();
   };
 
-  /* The pit of every chasm in view, darkening towards its floor. The
-     background layers stop well above a pit this deep and would otherwise
-     show through as a flat wall of colour; the shadow is what makes the hole
-     read as a hole. Drawn before the terrain, so the walls sit over it. */
+  /* The pit of every chasm in view.
+
+     An earlier version painted a blue river valley down there, for a mountain
+     canyon theme that was never finished, and in the meadow it read as a
+     flat blue card behind a hole. What actually makes the game's own natural
+     ravines read (a noise drop with the parallax carrying on behind it) is
+     that you SEE down the valley — so nothing is painted over the view here.
+     It is only pushed back: a breath of haze at the lip, gathering into
+     shadow as it falls out of the frame. The dark belongs on the walls.
+
+     The ramp is measured over the depth the player can actually see, not the
+     pit's full 1500px — most of that is below the bottom of the screen, and a
+     gradient spread over it lands nothing in frame. Drawn before the terrain,
+     so the walls sit over it. */
   R.drawChasmDepth = function (track) {
     if (!track || !track.chasms.length) return;
     var c = R.ctx, z = R.cam.z, i, g;
@@ -2620,59 +2781,102 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       g = track.chasms[i];
       if (g.bx < wl || g.ax > wr) continue;
       var x0 = R.sx(g.ax) - 2, x1 = R.sx(g.bx) + 2;
-      var lip = Math.min(g.ay, g.by), top = R.sy(lip), bot = R.sy(lip + 1000);
-      /* the valley far below: the parallax art ends a few hundred px down, so
-         beneath it a river-blue floor fades up into the haze */
-      var vt = R.sy(lip + 260), vb = R.sy(lip + 1000);
-      var valley = c.createLinearGradient(0, vt, 0, vb);
-      valley.addColorStop(0, 'rgba(70,140,190,0)');
-      valley.addColorStop(0.35, 'rgba(70,140,190,0.85)');
-      valley.addColorStop(0.7, 'rgba(40,95,140,1)');
-      valley.addColorStop(1, 'rgba(18,40,65,1)');
-      c.fillStyle = valley;
-      c.fillRect(x0, vt, x1 - x0, Math.max(0, Math.min(R.H + 40, vb) - vt));
+      var lip = Math.min(g.ay, g.by), top = Math.max(-40, R.sy(lip));
+      var bot = R.H + 40;
+      if (bot <= top) continue;
+      /* Atmospheric perspective, not paint. The parallax carries on behind the
+         hole at its own scale, and at full saturation those trees read as
+         growing INSIDE a trench; washed back into mist they read as a valley
+         floor a long way down, which is the whole illusion. Ramped over the
+         part of the pit that is on screen — the drop is 1500px deep and a
+         gradient spread over that lands nothing the player can see. */
       var grad = c.createLinearGradient(0, top, 0, bot);
-      grad.addColorStop(0, 'rgba(150,190,225,0.0)');
-      grad.addColorStop(0.25, 'rgba(120,165,205,0.22)');       // distance haze
-      grad.addColorStop(0.6, 'rgba(40,70,105,0.62)');
-      grad.addColorStop(1, 'rgba(12,20,34,0.96)');
+      grad.addColorStop(0, 'rgba(128,126,112,0.2)');
+      grad.addColorStop(0.42, 'rgba(74,66,56,0.68)');
+      grad.addColorStop(1, 'rgba(24,18,14,0.96)');
       c.fillStyle = grad;
-      c.fillRect(x0, top, x1 - x0, Math.max(0, Math.min(R.H + 40, bot) - top));
+      c.fillRect(x0, top, x1 - x0, bot - top);
     }
   };
 
-  /* Rock faces on the two walls, over the dirt: a cliff is cut stone, not a
-     slice through a flowerbed. Lit on the pit side, cracked at intervals. */
+  /* The two walls of a chasm.
+
+     This does NOT repaint them: a chasm wall is the same soil the rest of the
+     ground is made of, the terrain fill has already drawn it with the season's
+     own dirt texture, and painting a flat tan band over that is what made an
+     authored chasm look like a hatch cut in a lawn while the game's natural
+     ravines looked like ravines. So the soil is left alone and only worked:
+     shadow gathered back from the cut, strata scored into it, light caught on
+     the edge, and the turf curled over the drop. */
   R.drawChasmWalls = function (track) {
     if (!track || !track.chasms.length) return;
-    var c = R.ctx, z = R.cam.z, i, g, k;
+    var c = R.ctx, z = R.cam.z, i, g;
     var wl = R.cam.x - (R.W / 2 + 100) / z, wr = R.cam.x + (R.W / 2 + 100) / z;
-    var W = 44 * z;
-    function face(sx, lipY, side) {         // side +1: face looks to +x (near wall)
-      var top = R.sy(lipY) + 2, bot = R.H + 10, x0 = side > 0 ? sx - W : sx;
+    var W = 46 * z;                         // how far back from the lip the rock is worked
+
+    function face(sx, lipY, side) {         // side +1: the near wall, its face looking +x
+      var top = R.sy(lipY), bot = R.H + 10, x0 = side > 0 ? sx - W : sx;
       if (top > bot) return;
-      var grad = c.createLinearGradient(x0, 0, x0 + W, 0);
-      if (side > 0) { grad.addColorStop(0, '#8D6743'); grad.addColorStop(0.75, '#B08856'); grad.addColorStop(1, '#D4AA6E'); }
-      else { grad.addColorStop(0, '#D4AA6E'); grad.addColorStop(0.25, '#B08856'); grad.addColorStop(1, '#8D6743'); }
-      c.fillStyle = grad;
-      c.fillRect(x0, top, W, bot - top);
-      /* strata and cracks, seeded by the wall's world x so they do not crawl */
-      var rnd = CG.rng(Math.floor(sx / z + R.cam.x) | 0), y = top + 10 * z, n = 0;
-      c.strokeStyle = 'rgba(70,40,20,0.45)'; c.lineWidth = 2 * z;
+      var edge = side > 0 ? sx : sx;        // the cut itself
+      var rnd = CG.rng((Math.floor(sx / z + R.cam.x) | 0) >>> 0);
+      c.save();
+      c.beginPath(); c.rect(x0, top, W, bot - top); c.clip();
+      /* shadow gathering towards the cut: the rock turns away from the light
+         as it approaches the edge, which is what gives the lip its thickness */
+      var gx = c.createLinearGradient(x0, 0, x0 + W, 0);
+      if (side > 0) {
+        gx.addColorStop(0, 'rgba(34,23,15,0)');
+        gx.addColorStop(0.5, 'rgba(32,21,14,0.4)');
+        gx.addColorStop(1, 'rgba(20,12,8,0.8)');
+      } else {
+        gx.addColorStop(0, 'rgba(20,12,8,0.8)');
+        gx.addColorStop(0.5, 'rgba(32,21,14,0.4)');
+        gx.addColorStop(1, 'rgba(34,23,15,0)');
+      }
+      c.fillStyle = gx; c.fillRect(x0, top, W, bot - top);
+      /* strata, seeded by the wall's world x so they do not crawl with the camera */
+      var y = top + 16 * z, n = 0;
+      c.lineWidth = Math.max(1.2, 2 * z);
+      c.strokeStyle = 'rgba(58,37,21,0.5)';
       c.beginPath();
-      while (y < bot && n++ < 60) {
-        var len = W * (0.4 + rnd() * 0.6), xs = side > 0 ? x0 + W - len : x0;
-        c.moveTo(xs, y); c.lineTo(xs + len, y + (rnd() - 0.5) * 8 * z);
-        y += (26 + rnd() * 48) * z;
+      while (y < bot && n++ < 40) {
+        var len = W * (0.3 + rnd() * 0.5), xs = side > 0 ? x0 + W - len : x0;
+        c.moveTo(xs, y); c.lineTo(xs + len, y + (rnd() - 0.5) * 7 * z);
+        y += (30 + rnd() * 54) * z;
       }
       c.stroke();
-      /* depth shade down the face */
-      var g2 = c.createLinearGradient(0, top, 0, top + 900 * z);
-      g2.addColorStop(0, 'rgba(0,0,0,0)'); g2.addColorStop(1, 'rgba(10,15,25,0.85)');
-      c.fillStyle = g2; c.fillRect(x0, top, W, bot - top);
-      /* the lip's own edge */
-      c.fillStyle = 'rgba(255,240,200,0.35)';
-      c.fillRect(side > 0 ? sx - 3 * z : sx, top - 2, 3 * z, Math.min(bot - top, 900 * z));
+      c.restore();
+      /* Outcrops stepping down the face, into the gap. Nothing else on screen
+         gives the drop a scale: a flat cut could be a metre deep or fifty, and
+         a few ledges catching the light on their tops and hanging their own
+         shadow under them is what a cliff is read by. */
+      var oy = top + (26 + rnd() * 26) * z, m = 0;
+      while (oy < bot && m++ < 5) {
+        var ow = (7 + rnd() * 16) * z, oh = (11 + rnd() * 16) * z;
+        var ox = side > 0 ? edge : edge - ow;
+        c.beginPath();
+        c.moveTo(ox + (side > 0 ? 0 : ow), oy);
+        c.lineTo(ox + (side > 0 ? ow : 0), oy + oh * 0.3);
+        c.lineTo(ox + (side > 0 ? ow * 0.8 : ow * 0.2), oy + oh);
+        c.lineTo(ox + (side > 0 ? 0 : ow), oy + oh * 0.9);
+        c.closePath();
+        c.fillStyle = 'rgba(38,25,16,0.92)'; c.fill();
+        c.strokeStyle = 'rgba(120,88,56,0.5)'; c.lineWidth = Math.max(1, 1.6 * z); c.stroke();
+        oy += (46 + rnd() * 80) * z;
+      }
+      /* the lit edge of the cut, fading out as it drops into shade */
+      var lit = c.createLinearGradient(0, top, 0, Math.min(bot, top + 90 * z));
+      lit.addColorStop(0, 'rgba(255,238,198,0.5)');
+      lit.addColorStop(1, 'rgba(255,238,198,0)');
+      c.fillStyle = lit;
+      c.fillRect(side > 0 ? sx - 3 * z : sx, top, 3 * z, Math.min(bot - top, 90 * z));
+      /* and the shadow the turf throws under its own overhang, which is what
+         makes the grass read as hanging over the drop rather than stopping at it */
+      var und = c.createLinearGradient(0, top, 0, top + 26 * z);
+      und.addColorStop(0, 'rgba(18,11,7,0.75)');
+      und.addColorStop(1, 'rgba(18,11,7,0)');
+      c.fillStyle = und;
+      c.fillRect(side > 0 ? sx - 16 * z : sx, top, 16 * z, Math.min(bot - top, 26 * z));
     }
     for (i = 0; i < track.chasms.length; i++) {
       g = track.chasms[i];
@@ -2685,12 +2889,13 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   /* The two plotted points, their labels and (when `legs`) the right
      triangle under the hypotenuse with its legs measured — the hint. Drawn in
      front of the terrain: these must never be hidden. */
-  R.drawGapPoints = function (gap, alpha, legs) {
-    if (!gap || alpha <= 0.01) return;
-    var c = R.ctx, z = R.cam.z, U = CG.UNIT;
+  R.drawGapPoints = function (gap, alpha, legs, bAlpha) {
+    var aA = alpha, aB = bAlpha === undefined ? alpha : bAlpha;
+    if (!gap || Math.max(aA, aB) <= 0.01) return;
+    var c = R.ctx, z = R.cam.z;
     var ax = R.sx(gap.ax), ay = R.sy(gap.ay), bx = R.sx(gap.bx), by = R.sy(gap.by);
     c.save();
-    c.globalAlpha = alpha;
+    c.globalAlpha = Math.min(aA, aB);
     if (legs) {
       var q = gap.q, cx = bx, cy = ay;              // the corner under B, level with A
       c.setLineDash([6 * z, 5 * z]);
@@ -2704,7 +2909,15 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       if (q.dy) R.text(String(q.dy), cx + 16 * z, (cy + by) / 2, 17 * z, '#FFF176', 'left', 4);
     }
     var r = 9 * z;
-    [[ax, ay, gap.a, 'right'], [bx, by, gap.b, 'left']].forEach(function (p) {
+    /* the two points land one after the other, each with a little bounce, so
+       the question builds itself in front of the player rather than appearing
+       fully formed */
+    [[ax, ay, gap.a, aA], [bx, by, gap.b, aB]].forEach(function (p) {
+      if (p[3] <= 0.01) return;
+      c.save();
+      c.globalAlpha = p[3];
+      var pop = 1 + 0.4 * Math.sin(Math.min(1, p[3]) * Math.PI);
+      c.translate(p[0], p[1]); c.scale(pop, pop); c.translate(-p[0], -p[1]);
       c.beginPath(); c.arc(p[0], p[1], r + 4, 0, CG.TAU);
       c.fillStyle = 'rgba(255,255,255,0.35)'; c.fill();
       c.beginPath(); c.arc(p[0], p[1], r, 0, CG.TAU);
@@ -2718,6 +2931,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       c.fillStyle = 'rgba(255,255,255,0.96)'; c.fill();
       c.lineWidth = 3; c.strokeStyle = '#8E24AA'; c.stroke();
       R.text(txt, lx, ly + 1, fs, '#5E1B8A', 'center', 0);
+      c.restore();
     });
     c.restore();
   };
@@ -3096,6 +3310,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     G.seed = (Math.random() * 1e9) | 0 || 1;
     CG.Terrain.setSeed(G.seed);
     CG.Terrain.setTrack(null);
+    CG.Endless.reset(G.seed);
     CG.World.init(G.seed, null);
     G.fuel = FUEL_MAX; G.lives = 1; G.cpIdx = -1; G.cpX = 0;
     beginRun(160);
@@ -3118,6 +3333,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     CG.Terrain.setSeed(G.seed);
     G.track = null;
     CG.Terrain.setTrack(null);
+    CG.Endless.reset(G.seed);
     CG.World.init(G.seed, null);
     CG.Env.reset(G.seed);
     FX.reset();
@@ -3260,6 +3476,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   /* -------------------------------------------------------------- update */
   var COAST = { gas: 0, brake: 0, boost: false };
   var SLOWDOWN = { gas: 0, brake: 0.55, boost: false };
+  var HARD = { gas: 0, brake: 1, boost: false };
   var CREEP = { gas: 0.4, brake: 0, boost: false };
 
   /* ------------------------------------------------------------- CHASMS
@@ -3277,8 +3494,27 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      a child who runs out of lives on arithmetic stops playing.             */
   var SPAWN_T = 0.38, PLACE_T = 1.1, FAIL_T = 1.05, FADE_T = 0.45;
 
+  /* THE STOP, AND THE REVEAL AFTER IT.
+
+     GRAB_T is how long the driver stands on a locked brake when the drop
+     comes into view — the tyre model turns that into a screech, smoke and a
+     nose-dive on its own, so the stop is a moment rather than a slow roll.
+
+     Then the question is built in front of the player one piece at a time,
+     seconds from the instant the car comes to rest: pane, axes, the near
+     point, the far point, the question, the ruler. Everything arriving at
+     once buried the stop it was supposed to be the answer to. A retry skips
+     the build (resetGap winds `reveal` past the end) — the player has seen it. */
+  var GRAB_T = 0.5;
+  var REVEAL = { pane: 0.35, axes: 0.75, ptA: 1.05, ptB: 1.28, ask: 1.55, ruler: 1.8 };
+  var REVEAL_T = 0.3, REVEAL_DONE = 99;
+
+  function revealAt(q, t0) {
+    return q.out * CG.clamp((q.reveal - t0) / REVEAL_T, 0, 1);
+  }
+
   function nextChasm() {
-    var cs = G.track ? G.track.chasms : [], i;
+    var cs = G.track ? G.track.chasms : (G.mode === 'endless' ? CG.Endless.chasms : []), i;
     for (i = 0; i < cs.length; i++) if (!cs[i].solved) return cs[i];
     return null;
   }
@@ -3288,8 +3524,24 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var g = nextChasm();
     if (!g || v.x < g.armX || v.x > g.bx) return;
     G.gap = { g: g, phase: 'approach', t: 0, plank: null, len: 0, tries: 0,
-              wrong: {}, hint: false, fade: 0, grid: 0, tipped: false, pose0: null,
+              wrong: {}, hint: false, fade: 0, tipped: false, pose0: null,
+              grid: 0, axes: 0, ptA: 0, ptB: 0, panel: 0, rulerIn: 0,
+              reveal: 0, out: 1, beat: 0,
               ruler: { open: 0, target: 0, cursor: 0, value: 0, keyT: 0 } };
+    /* The driver sees it and stands on the brake. The faster the arrival, the
+       bigger the moment: a screech, smoke off both tyres, a kick through the
+       camera. A car already crawling gets the screech and nothing else. */
+    var sp = Math.max(0, v.forwardSpeed());
+    A.sfx('brake');
+    if (sp > 90) {
+      R.shake = Math.max(R.shake, Math.min(11, 3 + sp * 0.022));
+      for (var k = 0; k < 8; k++) {
+        var w = v.wheels[k & 1];
+        var px = w.contact ? w.cpx : v.x, py = w.contact ? w.cpy : v.y + 30;
+        FX.dust(px, py, -sp * (0.2 + Math.random() * 0.15), -20 - Math.random() * 40,
+                0.8 + Math.random() * 0.5);
+      }
+    }
   }
 
   /* Park the car dead: no creep while the player is thinking. */
@@ -3307,22 +3559,42 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   function gapControl(dt) {
     var q = G.gap, g = q.g, v = G.v;
     q.t += dt;
-    q.grid = CG.approach(q.grid, q.phase === 'done' ? 0 : 1, q.phase === 'done' ? 2.2 : 3.5, dt);
+    /* nothing of the question exists until the car has stopped */
+    if (q.phase !== 'approach') q.reveal += dt;
+    q.out = CG.approach(q.out, q.phase === 'done' ? 0 : 1, 2.4, dt);
+    q.grid = revealAt(q, REVEAL.pane);
+    q.axes = revealAt(q, REVEAL.axes);
+    q.ptA = revealAt(q, REVEAL.ptA);
+    q.ptB = revealAt(q, REVEAL.ptB);
+    q.panel = revealAt(q, REVEAL.ask);
+    q.rulerIn = revealAt(q, REVEAL.ruler);
+    /* one cue per piece as it lands, so the build is heard as well as seen */
+    if (q.phase !== 'approach' && q.out > 0.5) {
+      if (q.beat === 0 && q.reveal >= REVEAL.pane) { q.beat = 1; A.sfx('check'); }
+      else if (q.beat === 1 && q.reveal >= REVEAL.ptA) { q.beat = 2; A.sfx('click'); }
+      else if (q.beat === 2 && q.reveal >= REVEAL.ptB) { q.beat = 3; A.sfx('click'); }
+    }
     q.ruler.open = CG.approach(q.ruler.open, q.ruler.target, 10, dt);
     if (q.ruler.keyT > 0) q.ruler.keyT -= dt;
     switch (q.phase) {
       case 'approach': {
-        /* a speed target that shrinks with the distance left, so the car
-           rolls up and settles rather than slamming a wall — a fast arrival
-           still meets the barrier in gapAfterStep, in a cloud of dust */
+        /* The brake goes in hard first (GRAB_T of full lock — the skid, the
+           smoke and the nose-dive all fall out of the tyre model), then a
+           speed target that shrinks with the distance left walks the car the
+           last few metres to the lip rather than slamming a wall. A fast
+           arrival still meets the barrier in gapAfterStep, in a cloud of dust. */
         var rem = g.stopX - v.x, sp = v.forwardSpeed();
         var want = CG.clamp(rem * 2.4, 0, 260);
         if (rem < 8 && Math.abs(sp) < 30) {
           holdCar(v);
           q.phase = 'ask'; q.t = 0;
-          A.sfx('check');
+          for (var d = 0; d < 4; d++) {
+            var w = v.wheels[d & 1];
+            if (w.contact) FX.dust(w.cpx, w.cpy, -30, -25, 0.6);
+          }
           return COAST;
         }
+        if (q.t < GRAB_T && sp > 120) return HARD;
         if (sp > want + 15 && sp > 20) return SLOWDOWN;
         if (sp < want - 15) return CREEP;
         return COAST;
@@ -3338,7 +3610,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
         if (q.t >= FAIL_T) resetGap();
         return COAST;
       case 'done':
-        if (q.grid < 0.02) G.gap = null;
+        if (q.out < 0.02) G.gap = null;
         return null;
     }
     return null;
@@ -3414,7 +3686,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     v.reset(g.stopX);
     clearCrash(v);
     holdCar(v);
+    /* straight back to the question: the build-up is for the first arrival */
     q.phase = 'ask'; q.t = 0; q.fade = 1;
+    q.reveal = REVEAL_DONE; q.beat = 3;
   }
 
   function solveGap() {
@@ -3499,7 +3773,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   function updatePlay(dt) {
     var v = G.v, i, w, force = null;
 
-    if (G.track) armGap(v);
+    if (G.mode === 'endless') CG.Endless.ensure(v.x);
+    if (G.track || G.mode === 'endless') armGap(v);
     if (G.gap) {
       force = gapControl(dt);
       if (G.gap && G.gap.phase === 'ask') {
@@ -3990,8 +4265,10 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 
   function drawGapUI() {
     var q = G.gap, g = q.g, c = R.ctx, W = R.W, H = R.H;
-    if (q.phase === 'ask') {
+    if (q.phase === 'ask' && q.panel > 0.01) {
       var qq = g.q, ty = 56, gb = R.gridBox(g), ra = rulerAnchor();
+      c.save();
+      c.globalAlpha = q.panel;
       /* centred over the grid pane, but never over the ruler */
       var rulerRight = ra.x + RULER_BOX / 2 + RULER_W / 2 + 16;
       var pw = CG.clamp(Math.min(W * 0.55, 560, W - rulerRight - 24), 260, 560);
@@ -4017,8 +4294,16 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       var tip = !ru.target ? 'tap the arrow to open the ruler'
               : ru.cursor && !q.wrong[ru.cursor] ? 'tap the green arrow to drop the plank'
               : 'tap the number the plank needs';
-      R.text(tip, W / 2, H - 28, 17, 'rgba(236,239,241,0.85)', 'center', 3);
-      drawRuler(q);
+      c.restore();
+      /* the ruler is the last thing to arrive, and the first thing the player
+         can touch — nothing is tappable until the question is fully up */
+      if (q.rulerIn > 0.01) {
+        c.save();
+        c.globalAlpha = q.rulerIn;
+        R.text(tip, W / 2, H - 28, 17, 'rgba(236,239,241,0.85)', 'center', 3);
+        drawRuler(q);
+        c.restore();
+      }
     } else if ((q.phase === 'spawn' || q.phase === 'place') && q.plank) {
       drawRuler(q);                    // folded, showing the number chosen, until the plank lands
     }
@@ -4031,38 +4316,41 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     }
   }
 
-  /* ruler controls: the arrow, a mark, or the keyboard */
+  /* ruler controls: the arrow, a mark, or the keyboard. Nothing responds
+     until the reveal has finished putting the ruler on screen — a keyboard
+     player hammering Enter would otherwise answer a question still arriving. */
+  function asking(q) { return q && q.phase === 'ask' && q.rulerIn > 0.5; }
   G.rulerToggle = function (open) {
     var q = G.gap;
-    if (!q || q.phase !== 'ask') return;
+    if (!asking(q)) return;
     q.ruler.target = open === undefined ? (q.ruler.target ? 0 : 1) : (open ? 1 : 0);
     A.sfx('click');
   };
   /* highlight a mark; the plank does not drop until the button confirms */
   G.rulerPick = function (k) {
     var q = G.gap;
-    if (!q || q.phase !== 'ask' || k < 1 || k > CG.Gaps.RULER_MAX || q.wrong[k]) return;
+    if (!asking(q) || k < 1 || k > CG.Gaps.RULER_MAX || q.wrong[k]) return;
     if (!q.ruler.target) q.ruler.target = 1;
     q.ruler.cursor = k;
     A.sfx('click');
   };
   G.rulerConfirm = function () {
     var q = G.gap;
-    if (!q || q.phase !== 'ask') return;
+    if (!asking(q)) return;
     var k = q.ruler.cursor;
     if (q.ruler.target && k && !q.wrong[k]) G.answer(k);
   };
   /* the amber button: open when folded, drop when a mark is lit, fold otherwise */
   G.rulerButton = function () {
     var q = G.gap;
-    if (!q || q.phase !== 'ask') return;
+    if (!asking(q)) return;
     if (!q.ruler.target) G.rulerToggle(true);
     else if (q.ruler.cursor && !q.wrong[q.ruler.cursor]) G.rulerConfirm();
     else G.rulerToggle(false);
   };
   G.rulerKey = function (k) {
     var q = G.gap, ru;
-    if (!q || q.phase !== 'ask') return false;
+    if (!asking(q)) return false;
     ru = q.ruler;
     var N = CG.Gaps.RULER_MAX;
     if (k === 'Enter') { G.rulerButton(); return true; }
@@ -4272,14 +4560,15 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     buttons.length = 0;
     R.begin();
     var q = G.gap;
+    var chasmSrc = G.track || (G.mode === 'endless' ? CG.Endless : null);
     R.drawBackground();
     R.horizon();
     R.drawGroundHaze();
     R.drawProps(true);
-    if (q) R.drawGrid(q.g, q.grid);
-    if (G.track) R.drawChasmDepth(G.track);
+    if (q) R.drawGrid(q.g, q.grid, q.axes);
+    if (chasmSrc) R.drawChasmDepth(chasmSrc);
     R.drawTerrain();
-    if (G.track) R.drawChasmWalls(G.track);
+    if (chasmSrc) R.drawChasmWalls(chasmSrc);
     R.drawProps(false);
     if (G.track) R.drawFinish(G.track, G.time);
     R.drawPickups(G.time);
@@ -4288,7 +4577,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     if (q && q.plank && q.phase !== 'ask') {
       R.drawPlank(G.plankPose(), q.len + ' units');
     }
-    if (q) R.drawGapPoints(q.g, q.grid, q.hint && q.phase === 'ask');
+    if (q) R.drawGapPoints(q.g, q.ptA, q.hint && q.phase === 'ask', q.ptB);
     R.drawVehicle(G.v, dt);
     R.drawFX(true);
     R.drawForeground();
@@ -4527,6 +4816,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
             G.seed = (+opts.seed) | 0 || 1;
             CG.Terrain.setSeed(G.seed);
             CG.Terrain.setTrack(null);
+            CG.Endless.reset(G.seed);
             CG.World.init(G.seed, null);
             G.v.reset(160);
             R.cam.x = G.v.x; R.cam.y = G.v.y;

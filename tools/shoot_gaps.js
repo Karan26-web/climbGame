@@ -49,11 +49,17 @@ const stage = process.argv[2] || '1';
     (p) => CG.Game.gap && CG.Game.gap.phase === p, p, { timeout: ms || 15000 });
   const gas = (on) => on ? page.keyboard.down('ArrowRight') : page.keyboard.up('ArrowRight');
 
+  /* the question builds itself up after the stop; nothing is tappable until
+     the ruler has arrived (see the reveal in gapControl) */
+  const waitReveal = () => page.waitForFunction(
+    () => CG.Game.gap && CG.Game.gap.rulerIn > 0.5, null, { timeout: 15000 });
+
   /* 1. drive to the first chasm and get stopped */
   await gas(true);
   await waitPhase('ask', 30000);
   await gas(false);
-  await page.waitForTimeout(900);                     // grid fade-in
+  await waitReveal();                                 // the reveal builds the question
+  await page.waitForTimeout(350);
   await shot('g1_ask');
 
   const q = await page.evaluate(() => {
@@ -65,6 +71,7 @@ const stage = process.argv[2] || '1';
 
   /* open the ruler, light a mark, confirm — what a finger does */
   async function tryAnswer(k, tag) {
+    await waitReveal();
     await page.evaluate(() => CG.Game.rulerToggle(true));
     await page.waitForTimeout(500);
     if (tag === 'g2_short') await shot('g1b_ruler_open');
@@ -126,7 +133,8 @@ const stage = process.argv[2] || '1';
   await phone.keyboard.down('ArrowRight');
   await phone.waitForFunction(() => CG.Game.gap && CG.Game.gap.phase === 'ask', null, { timeout: 30000 });
   await phone.keyboard.up('ArrowRight');
-  await phone.waitForTimeout(900);
+  await phone.waitForFunction(() => CG.Game.gap && CG.Game.gap.rulerIn > 0.5, null, { timeout: 15000 });
+  await phone.waitForTimeout(250);
   await phone.evaluate(() => CG.Game.rulerToggle(true));
   await phone.waitForTimeout(500);
   await phone.screenshot({ path: path.join(out, 'g6_phone_ask.png') });
