@@ -1,0 +1,73 @@
+{
+  "assets/background/sky.webp": {
+    "size": [
+      1774,
+      887
+    ],
+    "horizontal_wrap_mean_abs_diff": 0.316,
+    "first_nontransparent_row": 0,
+    "alpha_min": 255,
+    "alpha_max": 255
+  },
+  "assets/background/hills_far.webp": {
+    "size": [
+      1774,
+      887
+    ],
+    "horizontal_wrap_mean_abs_diff": 0.096,
+    "first_nontransparent_row": 618,
+    "alpha_min": 0,
+    "alpha_max": 255
+  },
+  "assets/background/hills_mid.webp": {
+    "size": [
+      1774,
+      887
+    ],
+    "horizontal_wrap_mean_abs_diff": 0.33,
+    "first_nontransparent_row": 508,
+    "alpha_min": 0,
+    "alpha_max": 255
+  },
+  "assets/background/trees_near.webp": {
+    "size": [
+      1774,
+      887
+    ],
+    "horizontal_wrap_mean_abs_diff": 0.346,
+    "first_nontransparent_row": 312,
+    "alpha_min": 0,
+    "alpha_max": 255
+  },
+  "assets/background/foreground_grass.webp": {
+    "size": [
+      2172,
+      724
+    ],
+    "horizontal_wrap_mean_abs_diff": 0.212,
+    "first_nontransparent_row": 232,
+    "alpha_min": 0,
+    "alpha_max": 255
+  },
+  "assets/terrain/grass_top.webp": {
+    "size": [
+      2508,
+      627
+    ],
+    "horizontal_wrap_mean_abs_diff": 0.538,
+    "first_nontransparent_row": 0,
+    "alpha_min": 255,
+    "alpha_max": 255
+  },
+  "assets/terrain/dirt_body.webp": {
+    "size": [
+      1254,
+      1254
+    ],
+    "horizontal_wrap_mean_abs_diff": 0.295,
+    "first_nontransparent_row": 0,
+    "alpha_min": 255,
+    "alpha_max": 255,
+    "vertical_wrap_mean_abs_diff": 1.019
+  }
+}

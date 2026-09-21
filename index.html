@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="theme-color" content="#4FC3F7">
+<meta name="theme-color" content="#2F4A93">
 <title>Climb Game</title>
 <style>
   html, body {
@@ -18,7 +18,7 @@
   #boot {
     position: fixed; inset: 0; display: flex; flex-direction: column;
     align-items: center; justify-content: center; gap: 18px;
-    background: linear-gradient(#4FC3F7, #0288D1); z-index: 10;
+    background: linear-gradient(#FBC58C, #2F4A93); z-index: 10;
     transition: opacity .45s ease; font-weight: 800; letter-spacing: .06em;
   }
   #boot.gone { opacity: 0; pointer-events: none; }
@@ -119,8 +119,14 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 
   var Terrain = CG.Terrain = {
     seed: 1,
+    track: null,
 
     setSeed: function (s) { this.seed = (s | 0) || 1; },
+
+    /* A stage hands the terrain an authored pathway (see the PATHWAY module).
+       With no track set the old endless noise field is used instead, which is
+       what the title screen and the unlocked endless mode still run on. */
+    setTrack: function (t) { this.track = t || null; },
 
     /* Sparse launch ramps / big rollers, laid down on top of the noise so the
        track has deliberate jumps instead of only rolling hills. */
@@ -146,6 +152,16 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 
     /* Height above the base line. Grows rougher with distance. */
     elevation: function (x) {
+      if (this.track) {
+        /* fine grain on top of the authored curve: too small to change where
+           the car lands, big enough that the ground is not visibly synthetic.
+           A chasm part opts out: its two lips ARE the plotted points, and a
+           point that is 3px off its own grid line is a point a child cannot
+           read. */
+        var part = this.track.at(x);
+        if (part && part.exact) return this.track.elevation(x);
+        return this.track.elevation(x) + CG.vnoise(x / 74, 67 + this.seed * 7919) * 3;
+      }
       var sd = this.seed * 7919;
       var diff = 1 - Math.exp(-Math.max(0, x) / 7000);   // 0 -> 1 difficulty ramp
       var h = 0;
@@ -162,13 +178,57 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       return h;
     },
 
-    /* Surface y in world space. The first 900px are flattened to the start
-       height so the player always begins on level ground. */
-    y: function (x) {
+    /* Bare ground y in world space — the dirt, with no planks laid over it.
+       The first 900px are flattened to the start height so the player always
+       begins on level ground. The renderer draws THIS, so a chasm still looks
+       like a chasm once it has been bridged. */
+    ground: function (x) {
       var h = this.elevation(x);
       var s = CG.smoothstep(120, 1000, x);
       if (s < 1) h = CG.lerp(this.elevation(0), h, s);
       return CG.BASE_Y - h;
+    },
+
+    /* PLANKS — the bridges the player earns by answering. Each is a straight
+       driving surface {x0,y0,x1,y1} (top edge, x0 < x1) laid over the ground;
+       the car drives on whichever is higher, so a plank over a pit is a road
+       and a plank that stops short is a road that ends in mid-air. Planks are
+       part of the physics surface, not decoration: the vehicle, the bot in
+       tools/stage_test.js and the game all see exactly the same thing. */
+    planks: [],
+    setPlanks: function (list) { this.planks = list || []; },
+    addPlank: function (p) { this.planks.push(p); },
+
+    /* Driving surface y in world space: ground, or a plank if one is higher. */
+    y: function (x) {
+      var y = this.ground(x), ps = this.planks, i, p;
+      for (i = 0; i < ps.length; i++) {
+        p = ps[i];
+        if (x < p.x0 || x > p.x1) continue;
+        var py = p.y0 + (x - p.x0) * (p.y1 - p.y0) / (p.x1 - p.x0);
+        if (py < y) y = py;
+      }
+      return y;
+    },
+
+    /* Is x on a plank (rather than on the ground)? Used to tell a car that
+       drove off the END of a short plank from one that never got on it. */
+    onPlank: function (x) {
+      var ps = this.planks, i;
+      for (i = 0; i < ps.length; i++) if (x >= ps[i].x0 && x <= ps[i].x1) return ps[i];
+      return null;
+    },
+
+    /* Ground-only sample, for placing props and drawing the dirt. */
+    gsample: function (x, out) {
+      out = out || {};
+      var d = 1.5, y = this.ground(x);
+      var m = (this.ground(x + d) - this.ground(x - d)) / (2 * d);
+      var L = Math.sqrt(1 + m * m);
+      out.x = x; out.y = y; out.m = m;
+      out.nx = m / L; out.ny = -1 / L; out.tx = 1 / L; out.ty = m / L;
+      out.ang = Math.atan2(m, 1);
+      return out;
     },
 
     /* Surface point, slope and up-normal at x. */
@@ -184,6 +244,436 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       out.ang = Math.atan2(m, 1);
       return out;
     }
+  };
+})(CG);
+
+/* ================================== PATHWAY =================================
+   Authored track parts ("the pathway"), stitched into a stage.
+
+   A part is a height curve h(t), t in [0,1], measured RELATIVE to the height
+   the previous part ended at. The contract that makes parts interchangeable:
+
+       h(0) = 0        and      h'(0) = h'(1) = 0
+
+   i.e. every part enters and leaves level, so any two parts join without a
+   kink the wheels could catch on. INSIDE a part anything goes — a kicker
+   wants a sharp lip, a drop-off wants a cliff. Those discontinuities are
+   deliberate and always land away from a join.
+
+   Everything here is a pure function of (stage plan, seed): no state, no
+   stored heightmap, identical on every replay, and DOM-free so
+   tools/sim_test.js can drive every part headlessly before it ships.        */
+(function (CG) {
+  'use strict';
+
+  var TAU = CG.TAU, PI = Math.PI;
+  function ss(t) { return t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t); }
+  function sin2(t) { var s = Math.sin(PI * t); return s * s; }
+
+  /* THE SLOPE BUDGET — these are the car's measured limits, from
+     tools/sim_test.js, not taste:
+         climbs a sustained 30 deg, stalls into wheelspin past 35,
+         tops out at 76 km/h, brakes from that in 23 m.
+     So every part keeps its SUSTAINED slope under 30 deg. The only ground
+     steeper than that is a take-off lip (short, arrived at with speed, exits
+     downhill) or a cliff face (which the car flies off, never up). And no pit
+     is ever a trap: every hole has an escape ramp under 30 deg, so missing a
+     jump costs time, never the run. tools/stage_test.js re-checks all of this
+     on every stage, so a part that breaks the budget fails the build. */
+  var MAX_TAN = 0.55;                    // tan(29 deg) — sustained ground
+  var LIP_TAN = 0.80;                    // tan(39 deg) — take-off lips only
+
+  /* Shortest length that keeps a height change of H inside a slope budget.
+     `k` is the curve's peak derivative: 1.5 for smoothstep, PI for sin^2. */
+  function fit(H, k, tan) { return Math.abs(H) * k / (tan || MAX_TAN); }
+
+  /* Each builder takes (d, r): d = stage difficulty 0..1, r = seeded rng.
+     Returns { len, h, tags } — tags drive decoration and pickup placement:
+       rest  flat enough to park on        air   expect the car to leave the ground
+       grind sustained traction demand     risk  a real chance of ending the run  */
+  var PARTS = CG.PARTS = {
+
+    /* Level ground. The run always opens on one so the player can settle. */
+    start: function () {
+      return { len: 1000, h: function () { return 0; }, tags: 'rest' };
+    },
+
+    flat: function (d, r) {
+      var L = 460 + r() * 320;
+      return { len: L, h: function () { return 0; }, tags: 'rest' };
+    },
+
+    /* Rolling whoops. The bread and butter: teaches throttle modulation,
+       because flooring it here bounces the nose up and loses drive. */
+    rollers: function (d, r) {
+      var n = 2 + Math.floor(r() * 3), L = 620 + n * 300;
+      var a = Math.min(30 + d * 58, MAX_TAN * L / (Math.PI * n));
+      return { len: L, tags: 'flow',
+               h: function (t) { return a * 0.5 * (1 - Math.cos(CG.TAU * n * t)); } };
+    },
+
+    /* Fast, shallow chatter — shakes the suspension without threatening. */
+    washboard: function (d, r) {
+      var n = 5 + Math.floor(r() * 4), L = 700 + n * 120;
+      var a = Math.min(10 + d * 12, MAX_TAN * L / (Math.PI * n));
+      return { len: L, tags: 'flow',
+               h: function (t) { return a * 0.5 * (1 - Math.cos(CG.TAU * n * t)); } };
+    },
+
+    /* Sustained ascent. Net elevation gain — the stage climbs as it runs. */
+    climb: function (d, r) {
+      var H = 150 + d * 300 + r() * 90, L = Math.max(820 + H * 1.35, fit(H, 1.5));
+      return { len: L, tags: 'grind',
+               h: function (t) { return H * ss(t); } };
+    },
+
+    /* The payback: a long descent, free speed, easy to over-commit into. */
+    descent: function (d, r) {
+      var H = 140 + d * 260 + r() * 80, L = Math.max(780 + H * 1.15, fit(H, 1.5));
+      return { len: L, tags: 'flow',
+               h: function (t) { return -H * ss(t); } };
+    },
+
+    /* A big smooth hump. The far side is blind from the approach. */
+    crest: function (d, r) {
+      var H = 150 + d * 230 + r() * 70, L = Math.max(980, fit(H, Math.PI));
+      return { len: L, tags: 'flow', h: function (t) { return H * sin2(t); } };
+    },
+
+    /* A bowl. Bottoms the suspension out at speed and compresses the exit. */
+    basin: function (d, r) {
+      var D = 150 + d * 250 + r() * 80, L = Math.max(900, fit(D, Math.PI));
+      return { len: L, tags: 'flow', h: function (t) { return -D * sin2(t); } };
+    },
+
+    /* Ramp that falls away at the lip: the ground leaves before the car does,
+       so this is the part that actually produces air time. The lip is the one
+       place a steep face is allowed — it is short and it exits downhill. */
+    kicker: function (d, r) {
+      var H = 110 + d * 130 + r() * 50, pit = 60 + d * 80;
+      var L = Math.max(900 + d * 300, fit(H, 1.7 / 0.45, LIP_TAN),
+                       fit(H + pit, Math.PI));
+      return { len: L, tags: 'air',
+        h: function (t) {
+          if (t < 0.45) return H * Math.pow(t / 0.45, 1.7);
+          var u = (t - 0.45) / 0.55;
+          return H * (1 - ss(u)) - pit * sin2(u);
+        } };
+    },
+
+    /* Take-off lip, a hole, a landing ramp. Clear it and you keep your speed;
+       miss it and you drive out of the bottom — slowly, and a checkpoint's
+       worth of fuel poorer. Never a dead end. */
+    gap: function (d, r) {
+      var H = 100 + d * 90, D = 130 + d * 120;
+      /* the escape ramp (t 0.55 -> 0.90) carries the whole depth plus the
+         landing lip, and it is what sets the part's length */
+      var L = Math.max(1200 + d * 500 + r() * 160, fit(D + H * 0.7, 1.5) / 0.35);
+      return { len: L, tags: 'air risk',
+        h: function (t) {
+          if (t < 0.22) return H * Math.pow(t / 0.22, 1.8);        // take-off
+          if (t < 0.55) {                                          // the hole
+            var u = (t - 0.22) / 0.33;
+            return H - (H + D) * ss(u);
+          }
+          if (t < 0.90) {                                          // escape ramp
+            var w = (t - 0.55) / 0.35;
+            return -D + (D + H * 0.7) * ss(w);
+          }
+          return H * 0.7 * (1 - ss((t - 0.90) / 0.10));
+        } };
+    },
+
+    /* Rock steps. Each step needs momentum, not throttle — but no single step
+       is steeper than the car can walk up from a standstill. */
+    stairs: function (d, r) {
+      var n = 3 + Math.floor(d * 3 + r()), rise = 55 + d * 55;
+      var L = Math.max(300 * n + 380, n * fit(rise, 1.5));
+      return { len: L, tags: 'grind risk',
+        h: function (t) {
+          var s = t * n, i = Math.floor(s), f = s - i;
+          if (i >= n) return n * rise;
+          return (i + ss(f)) * rise;
+        } };
+    },
+
+    /* Flat, then the floor disappears. Punishes a nose-down landing — but the
+       run-out below is long and level, so a good landing is rewarded with
+       speed rather than a second obstacle. */
+    dropoff: function (d, r) {
+      var H = 150 + d * 150 + r() * 60, L = Math.max(1500, H * 4.6);
+      return { len: L, tags: 'air risk',
+        h: function (t) {
+          if (t < 0.28) return 0;
+          return -H * ss(Math.min(1, (t - 0.28) / 0.26));   // rest is run-out
+        } };
+    },
+
+    /* Raised rest shelf. Checkpoints live here: level, generous, safe to
+       respawn onto, and visibly a place to breathe. */
+    shelf: function (d, r) {
+      var H = 60 + d * 120, L = Math.max(900 + r() * 200, fit(H, 1.5) / 0.45);
+      return { len: L, tags: 'rest',
+               h: function (t) { return H * ss(Math.min(1, t / 0.45)); } };
+    },
+
+    /* Long level run-out so a player who crosses the line at speed can stop. */
+    finish: function () {
+      return { len: 1900, h: function () { return 0; }, tags: 'rest' };
+    },
+
+    /* THE CHASM — the part the game is now about.
+       A level approach, a sheer drop, a pit, a sheer rise to the far lip
+       (which may be higher or lower than the near one), and a level run-out.
+       The two lips are the two points (x1,y1) and (x2,y2) of a distance-formula
+       question, plotted on a grid CG.UNIT px per unit, and the only way across
+       is a plank exactly sqrt(dx^2 + dy^2) units long. The car is stopped on
+       the approach, asked, and the plank it earns becomes part of the driving
+       surface (see Terrain.planks). Nothing here is random: the part is a pure
+       function of the authored coordinates, so a question is the same on every
+       replay and tools/stage_test.js can check every one of its three outcomes.
+       `spec` is [x1, y1, x2, y2]; x2 must exceed x1. */
+    chasm: function (d, r, spec) {
+      var U = CG.UNIT, W = CG.CHASM;
+      var dx = (spec[2] - spec[0]) * U, dyH = (spec[3] - spec[1]) * U;
+      if (dx <= 0) throw new Error('chasm: x2 must be greater than x1');
+      var floor = Math.min(0, dyH) - W.PIT;          // pit floor, relative height
+      var L = W.APP + dx + W.RUN, wall = W.WALL;
+      return { len: L, tags: 'rest math',
+        gapX: [W.APP, W.APP + dx],                   // lips, relative to x0
+        floor: floor, rise: dyH,
+        h: function (t) {
+          var x = t * L;
+          if (x < W.APP) return 0;
+          if (x < W.APP + wall) return floor * ss((x - W.APP) / wall);
+          if (x < W.APP + dx - wall) return floor;
+          if (x < W.APP + dx) return floor + (dyH - floor) * ss((x - (W.APP + dx - wall)) / wall);
+          return dyH;
+        } };
+    }
+  };
+
+  /* Grid scale and chasm geometry, in world px. One unit is 72px, so the
+     240px car spans about three units and the narrowest gap in the game (4
+     units) is wider than the car — at a smaller scale a car that drove off a
+     short plank simply rested its nose on the far wall, and the lesson was
+     lost. PIT is deep enough that a wedged over-long plank (which digs
+     sqrt(L^2 - dx^2) below the near lip) stays clear of the floor, and that a
+     fall reads as a fall before the reset. */
+  CG.UNIT = 72;
+  /* STOP is where the car's centre is held: far enough back that the jeep's
+     nose does not sit on the near point's label while the question is up. */
+  CG.CHASM = { APP: 900, RUN: 640, PIT: 1500, WALL: 10, STOP: 250, ARM: 820, CHUTE: 600 };
+
+  /* -------------------------------------------------------------- builder */
+  /* plan: array of part names, plus the markers 'CP' (checkpoint on the part
+     that follows) and 'FINISH' (the line is at the start of that part). */
+  var Track = CG.Track = {};
+
+  /* Landing insurance. Every part starts level by contract, but a part that
+     RISES hard just after an air part still flips a car that is coming down
+     fast — and that is a crash the player could not have avoided. So the
+     builder inserts a run-out rather than trusting the plan to be careful.
+     tools/stage_test.js is what found this, on GOLDEN SUMMIT. */
+  var AIR = { kicker: 1, gap: 1, dropoff: 1 };
+  var NO_LAND = { climb: 1, stairs: 1, crest: 1, shelf: 1, gap: 1, kicker: 1, chasm: 1 };
+
+  /* A plan entry is a part name, a marker, or a chasm spec `{ c: [x1,y1,x2,y2] }`. */
+  function nameOf(e) { return typeof e === 'string' ? e : 'chasm'; }
+
+  function expand(plan) {
+    var out = [], i, prev = '', n;
+    for (i = 0; i < plan.length; i++) {
+      n = nameOf(plan[i]);
+      if (AIR[prev] && NO_LAND[n]) out.push('flat');
+      out.push(plan[i]);
+      if (n !== 'CP' && n !== 'FINISH') prev = n;
+    }
+    return out;
+  }
+
+  Track.build = function (plan, seed, d) {
+    var rnd = CG.rng((seed >>> 0) || 1), parts = [], cps = [], chasms = [];
+    var x = 0, y = 0, cpNext = false, finishX = -1, i, name, p, entry;
+    plan = expand(plan);
+
+    for (i = 0; i < plan.length; i++) {
+      entry = plan[i];
+      name = nameOf(entry);
+      if (name === 'CP') { cpNext = true; continue; }
+      if (name === 'FINISH') { finishX = -2; continue; }   // resolved below
+      p = name === 'chasm' ? PARTS.chasm(d, rnd, entry.c) : (PARTS[name] || PARTS.flat)(d, rnd);
+      var part = { name: name, x0: x, x1: x + p.len, len: p.len, y0: y,
+                   h: p.h, tags: p.tags || '', cp: false, index: parts.length };
+      if (name === 'chasm') {
+        /* Everything the question needs, resolved to world space once. World y
+           grows downward; grid y grows upward, hence the sign flips. */
+        var U = CG.UNIT, c = entry.c;
+        var ax = x + p.gapX[0], bx = x + p.gapX[1];
+        var ay = CG.BASE_Y - y, by = CG.BASE_Y - (y + p.rise);
+        part.exact = true;                       // no fine noise: lips sit on the grid
+        part.gap = {
+          index: chasms.length, part: parts.length,
+          a: [c[0], c[1]], b: [c[2], c[3]],
+          ax: ax, ay: ay, bx: bx, by: by,
+          ox: ax - c[0] * U, oy: ay + c[1] * U,  // grid origin in world space
+          floorY: CG.BASE_Y - (y + p.floor),
+          stopX: ax - CG.CHASM.STOP,             // where the car is held
+          armX: ax - CG.CHASM.ARM,               // where the auto-brake takes over
+          D: Math.hypot(c[2] - c[0], c[3] - c[1]),
+          solved: false
+        };
+        part.gap.q = CG.Gaps.question(part.gap);
+        chasms.push(part.gap);
+      }
+      if (cpNext) {
+        /* the flag sits a little way onto the shelf, on level ground */
+        part.cp = true;
+        part.cpx = x + Math.min(340, p.len * 0.35);
+        cps.push(part.cpx);
+        cpNext = false;
+      }
+      if (finishX === -2) { finishX = x + 150; }
+      parts.push(part);
+      x += p.len;
+      y += p.h(1);
+    }
+
+    return {
+      parts: parts,
+      cps: cps,
+      chasms: chasms,
+      length: x,
+      finishX: finishX < 0 ? x - 1900 : finishX,
+      endY: y,
+
+      /* Binary search — a stage is 20-40 parts, so this is ~5 compares and the
+         terrain is sampled a few thousand times a frame. */
+      at: function (px) {
+        var lo = 0, hi = parts.length - 1, mid;
+        if (px <= 0) return parts[0];
+        if (px >= x) return null;
+        while (lo < hi) {
+          mid = (lo + hi) >> 1;
+          if (px < parts[mid].x1) hi = mid; else lo = mid + 1;
+        }
+        return parts[lo];
+      },
+
+      elevation: function (px) {
+        var p = this.at(px);
+        if (!p) return px <= 0 ? 0 : y;              // level run-out past the end
+        return p.y0 + p.h((px - p.x0) / p.len);
+      }
+    };
+  };
+})(CG);
+
+/* =================================== GAPS ===================================
+   The distance-formula question at a chasm, and the plank each answer buys.
+
+   Three outcomes, and each one is GEOMETRY rather than a verdict — the plank
+   the player chose is laid into the world and the physics decides:
+     exact   the plank's top edge runs lip to lip: a road
+     short   it starts on the near lip, aims at the far one, and ends in the
+             air, sagging, as an unsupported board would — the car drives off
+             the end and falls
+     long    it will not fit between the lips, so it wedges: near end on the
+             near lip, far end jammed against the far wall sqrt(L^2 - dx^2)
+             below it, a steep chute into a wall — the car pitches over
+   DOM-free: tools/stage_test.js drives all three for every chasm in every
+   stage before any of it ships.                                              */
+(function (CG) {
+  'use strict';
+
+  var Gaps = CG.Gaps = {};
+
+  /* The answer is read off a RULER, one unit at a time, so every chasm's
+     distance must be a whole number: a horizontal gap, or a Pythagorean
+     triple laid on its side. RULER_MAX is the longest plank the ruler
+     offers; the longest gap in the game is 13. */
+  Gaps.RULER_MAX = 14;
+
+  /* What the panel and the hint need to know about a chasm. Throws on a
+     gap whose distance is not whole — that is an authoring error, and it is
+     better caught when the stage table loads than by a child at the ruler. */
+  Gaps.question = function (gap) {
+    var dx = Math.abs(gap.b[0] - gap.a[0]), dy = Math.abs(gap.b[1] - gap.a[1]);
+    var sq = dx * dx + dy * dy, D = Math.round(Math.sqrt(sq));
+    if (D * D !== sq) throw new Error('chasm ' + JSON.stringify(gap.a) + '->' + JSON.stringify(gap.b) +
+                                      ': distance sqrt(' + sq + ') is not a whole number');
+    if (D > Gaps.RULER_MAX) throw new Error('chasm distance ' + D + ' is longer than the ruler');
+    return { dx: dx, dy: dy, sq: sq, D: D };
+  };
+
+  /* The plank a choice of `len` units produces, as a driving surface
+     {x0,y0,x1,y1} (its top edge) plus `kind`. */
+  Gaps.plankFor = function (gap, len) {
+    var U = CG.UNIT, L = len * U;
+    var ax = gap.ax, ay = gap.ay, bx = gap.bx, by = gap.by;
+    var dx = bx - ax, dy = by - ay, D = Math.hypot(dx, dy);
+    if (Math.abs(L - D) < 0.5) {
+      return { x0: ax, y0: ay, x1: bx, y1: by, kind: 'exact', len: len };
+    }
+    if (L < D) {
+      /* aimed at the far lip, drooping the more it falls short — and never
+         allowed to end above the far lip, or a fast car could jump the rest
+         and the lesson would be that short planks are fine */
+      var ang = Math.atan2(dy, dx) + 0.12 + 0.22 * (D - L) / D;
+      var ex = ax + Math.cos(ang) * L, ey = ay + Math.sin(ang) * L;
+      if (ey < by + 40) ey = by + 40;
+      return { x0: ax, y0: ay, x1: ex, y1: ey, kind: 'short', len: len };
+    }
+    /* too long: wedged, far end on the far wall below the far lip */
+    var drop = Math.sqrt(Math.max(0, L * L - dx * dx));
+    /* a chute deeper than CHUTE would leave the frame; an absurdly long plank
+       is laid to that depth instead (and so reads a little shorter than its
+       number — the only case where the geometry is not literal) */
+    var wy = Math.min(ay + drop, Math.max(ay, by) + CG.CHASM.CHUTE);
+    return { x0: ax, y0: ay, x1: bx, y1: wy, kind: 'long', len: len };
+  };
+
+  /* ---- what a wrong plank does to the car, shared by the game and the bot
+     so tools/stage_test.js proves the very behaviour the player meets. ---- */
+  Gaps.noseX = function (v) {              // front-bottom hull corner, world x
+    var h = CG.VConst.hull[0];
+    return v.x + h.x * v.ca - h.y * v.sa;
+  };
+  Gaps.frontAxleX = function (v) { return v.x + CG.VConst.axleFront.x * v.ca; };
+
+  /* SHORT: the board is supported at one end only. The moment the front
+     wheel runs off its far end the board gives way and pivots about the lip,
+     and the car goes down the chute it has become. */
+  Gaps.shortTripped = function (v, p) { return Gaps.frontAxleX(v) > p.x1 - 20; };
+  /* The instant the board goes, the car loses what was carrying it: its
+     climb dies, its speed halves, the nose dips. Without this a car that was
+     sprinting up a short plank kept its upward momentum and could fly the
+     last half unit onto the far lip — which would teach the opposite lesson. */
+  Gaps.boardGives = function (v) {
+    v.vx *= 0.5;
+    if (v.vy < 0) v.vy = 0;
+    v.av += 2.0;
+  };
+  var TIP_RATE = 3.0, TIP_MAX = 1.32;      // rad/s, rad (~76 deg below level)
+  Gaps.tipPlank = function (p, dt) {
+    var L = Math.hypot(p.x1 - p.x0, p.y1 - p.y0);
+    var th = Math.min(TIP_MAX, Math.atan2(p.y1 - p.y0, p.x1 - p.x0) + TIP_RATE * dt);
+    p.x1 = p.x0 + Math.cos(th) * L;
+    p.y1 = p.y0 + Math.sin(th) * L;
+    p.tipped = true;
+    return th >= TIP_MAX;
+  };
+
+  /* LONG: the chute ends in a wall. The nose meets it, the car stops dead
+     and pitches over onto its roof. */
+  Gaps.longTripped = function (v, p) { return Gaps.noseX(v) > p.x1 - 8; };
+  Gaps.wallFlip = function (v) { v.vx = 0; v.vy = -60; v.av = 6.5; };
+
+  /* A wrong plank has done its work once the car is in the pit, wrecked, or
+     has been past the point of no return for this long. */
+  Gaps.FAIL_AFTER = 1.15;
+  Gaps.failed = function (v, gap, since) {
+    return v.crashed || v.y > Math.max(gap.ay, gap.by) + 130 || since > Gaps.FAIL_AFTER;
   };
 })(CG);
 
@@ -203,17 +693,21 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 (function (CG) {
   'use strict';
 
-  /* ---- art-space -> local-space mapping (numbers from ASSET_AUDIT.md) ---- */
+  /* ---- art-space -> local-space mapping ----
+     The numbers are MEASURED from the sprite by tools/import_car.py (it fits a
+     circle to each wheel-arch edge and reports the centres); re-run it after
+     any re-render and paste what it prints. Sprite: assets/vehicle/car_body.webp,
+     1448x1086, the rally coupe with no wheels and a tinted cabin. */
   var WHEELBASE = 130;                    // world px between the axles
-  var ART = WHEELBASE / 901;              // jeep_body art px -> world px
-  var AXLE_MID_X = 863.5, AXLE_Y = 598;   // axle line in jeep_body art px
+  var ARCH_REAR_X = 294.7, ARCH_FRONT_X = 1054.5;   // arch centres, art px
+  var ART = WHEELBASE / (ARCH_FRONT_X - ARCH_REAR_X);   // art px -> world px
+  var AXLE_MID_X = (ARCH_REAR_X + ARCH_FRONT_X) / 2, AXLE_Y = 709;
   var COM_ABOVE_AXLE = 18;                // centre of mass sits above the axles
   var COM_FORWARD = 12;                   // ...and ahead of the axle midpoint.
-  var RIDE = 17;                          // body art sits this far ABOVE the
-  // axle line. The art's wheel arches are proportionally small (see
-  // ASSET_AUDIT.md), so without ride height the tyres disappear up inside the
-  // bodywork. Lifting the body — not the axles — exposes the lower half of the
-  // tyre and moves the collision hull up with it.
+  var RIDE = 0;                           // body art sits this far ABOVE the
+  // axle line. The jeep needed 17 here because its arches were cut high; this
+  // body's arches are cut low, 40px above the sill, so with a 30px tyre
+  // (175 art px) the lower third of the wheel already shows below the sill.
   // COM_FORWARD is a handling knob: moving mass forward lengthens gravity's
   // restoring arm about the rear contact, which is what stops full throttle
   // from backflipping the car on a climb. At +12 it holds to ~38 degrees.
@@ -233,7 +727,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     WHEELBASE: WHEELBASE,
     WHEEL_R: 30,
     MASS: 1,
-    INERTIA: (240 * 240 + 105 * 105) / 12,   // 5719, from the body's bounding box
+    INERTIA: (245 * 245 + 88 * 88) / 12,     // 5647, from the body's bounding box
     GRAV: 1400,
 
     SUS_TRAVEL: 20,
@@ -257,26 +751,34 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 
     AIR_DRAG: 0.00022,
     AV_DAMP: 0.5,
-    AIR_TORQUE: 5719 * 6.5,    // in-air pitch control
+    AIR_TORQUE: 5647 * 6.5,    // in-air pitch control (INERTIA x 6.5)
 
     /* draw + collision geometry, all derived from the audited mount points */
-    axleRear: AX(413),
-    axleFront: AX(1314),
-    seat: L(700, 470),
-    neck: L(713, 372.7),
-    exhaust: L(86, 530),
-    bodyOrigin: L(0, 0),                   // where the jeep_body image (0,0) lands
-    bodyW: (1730 - 63) * ART,
-    bodyH: (755 - 49) * ART,
-    hull: [L(1700, 745), L(1700, 330), L(1520, 250), L(1180, 130),
-           L(1130, 70), L(330, 60), L(140, 330), L(110, 700),
-           L(450, 762), L(1250, 762)]
+    axleRear: AX(ARCH_REAR_X),
+    axleFront: AX(ARCH_FRONT_X),
+    seat: L(700, 480),                     // cabin: where a ruler or a marker sits
+    neck: L(700, 385),
+    exhaust: L(40, 700),
+    lamp: L(1400, 565),                    // the headlamp cluster, for night
+    bodyOrigin: L(0, 0),                   // where the car_body image (0,0) lands
+    bodyW: (1442 - 9) * ART,
+    bodyH: (755 - 242) * ART,
+    /* the silhouette, traced clockwise from the front bumper: nose, bonnet,
+       screen, roof, rear glass, the wing (a car this shape rests on its wing
+       and roof when it lands upside down), rear bumper, then the sill */
+    hull: [L(1440, 745), L(1442, 650), L(1420, 545), L(1290, 452),
+           L(1080, 424), L(950, 340), L(790, 262), L(690, 248),
+           L(540, 290), L(380, 338), L(300, 300), L(60, 288),
+           L(20, 330), L(15, 605), L(60, 735), L(480, 755), L(1260, 755)]
   };
   /* Power limit: torque = P_MAX / omega above W_IDLE. P = torque * omega, so
      P_MAX must equal T_STALL * W_IDLE or the curve never engages. */
   V.P_MAX = V.T_STALL * V.W_IDLE;
+  /* The run-ending contact point. With the driver gone this is the roof
+     crown rather than a head above a roll cage: land on the roof and the run
+     is over, exactly as before, just without a person to be sorry for. */
   V.headR = 11;
-  V.head = { x: V.neck.x, y: V.neck.y - 14 };
+  V.head = L(739, 242);
   /* Suspension anchors: placed so that at rest sag the wheel centre lands
      exactly on the axle line. */
   /* Static load is not 50/50 once the COM moves forward, so each corner gets
@@ -530,10 +1032,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     fgGrass: 'background/foreground_grass.webp',
     grassTop: 'terrain/grass_top.webp',
     dirt: 'terrain/dirt_body.webp',
-    jeep: 'vehicle/jeep_body.webp',
+    car: 'vehicle/car_body.webp',
     wheel: 'vehicle/jeep_wheel.webp',
-    driverBody: 'vehicle/driver_body.webp',
-    driverHead: 'vehicle/driver_head.webp',
     coin: 'pickups/coin_sheet.webp',
     fuel: 'pickups/fuel_can.webp',
     gem: 'pickups/gem.webp',
@@ -565,6 +1065,52 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     coin: { frames: 8, frame: 192 },
     dust: { frames: 5, frame: 172 },
     smoke: { frames: 5, frame: 152 }
+  };
+
+  /* ------------------------------------------------------------ theme packs
+     A season is a pack of the seven tiled scenery files (the same contract
+     tools/import_theme.py installs), under assets/themes/<name>/. The set in
+     assets/background + assets/terrain is the built-in spring pack. Packs are
+     fetched AFTER the game is up, and a pack only joins the season cycle once
+     all seven of its files are in — so with no packs generated yet the game
+     simply stays in spring, and each pack you add is one more season. */
+  var PACK_FILES = {
+    sky: 'sky.webp', hillsFar: 'hills_far.webp', hillsMid: 'hills_mid.webp',
+    treesNear: 'trees_near.webp', fgGrass: 'foreground_grass.webp',
+    grassTop: 'grass_top.webp', dirt: 'dirt_body.webp'
+  };
+  CG.SEASONS = ['spring', 'summer', 'autumn', 'winter'];
+  CG.themes = {};
+
+  /* No pixel is ever READ from a pack: the game ships over file://, where an
+     image drawn to a canvas taints it and getImageData throws. The colour
+     above a sky on a big climb is instead the sky's own top row, stretched —
+     see drawSky. */
+  CG.loadThemes = function (onPack) {
+    /* spring is whatever loadAssets already brought in */
+    var spring = {};
+    for (var k in PACK_FILES) spring[k] = CG.img[k];
+    CG.themes.spring = spring;
+    CG.SEASONS.forEach(function (name) {
+      if (name === 'spring') return;
+      var keys = Object.keys(PACK_FILES), pack = {}, left = keys.length, dead = false;
+      keys.forEach(function (k) {
+        var im = new Image();
+        im.onload = function () {
+          pack[k] = im;
+          if (--left === 0 && !dead) {
+            CG.themes[name] = pack;
+            if (onPack) onPack(name);
+          }
+        };
+        im.onerror = function () { dead = true; };   // no pack: not a season yet
+        im.src = 'assets/themes/' + name + '/' + PACK_FILES[k];
+      });
+    });
+    /* the one shared night sky, optional; stars are drawn either way */
+    var ns = new Image();
+    ns.onload = function () { CG.img.nightSky = ns; };
+    ns.src = 'assets/themes/night_sky.webp';
   };
 
   CG.img = {};
@@ -635,7 +1181,85 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     A.tyre = { gain: tg, bp: bp };
 
     A.noise = noiseBuffer(ctx, 1.2);
+
+    /* --- music bus ----------------------------------------------------- */
+    A.musicGain = ctx.createGain();
+    A.musicGain.gain.value = 0.34;
+    A.musicGain.connect(A.master);
+
     A.ready = true;
+    A.loadPack();
+  };
+
+  /* ---------------------------------------------------------------- pack
+     Optional sampled one-shots. Anything present in assets/audio/ replaces the
+     synthesised cue of the same name; anything missing (404, decode failure,
+     file:// with no server) silently keeps the synth. The game therefore ships
+     and runs with zero audio files, and gets better if they are added.
+     Engine and tyre noise are deliberately NOT sampled — they are driven
+     continuously by rpm and slip, which a loop cannot do. */
+  /* Every sampled cue the game knows how to use. assets/audio/pack.json lists
+     which of them actually exist, e.g. ["coin","crash","win"] — one probe, so a
+     project with no audio files costs a single 404 instead of fourteen noisy
+     ones in the console. No pack.json at all = fully synthesised, by design. */
+  var SLOTS = ['coin', 'fuel', 'gem', 'boost', 'land', 'thud', 'crash', 'flip',
+               'click', 'over', 'check', 'win', 'star', 'plank', 'slam', 'go', 'wrong'];
+  A.files = {};
+  A.missing = {};
+
+  A.loadPack = function () {
+    if (!A.ctx || A.packLoaded) return;
+    A.packLoaded = true;
+    fetch('assets/audio/pack.json').then(function (r) {
+      if (!r.ok) throw 0;
+      return r.json();
+    }).then(function (list) {
+      (list || []).forEach(function (name) {
+        if (SLOTS.indexOf(name) < 0) return;
+        fetch('assets/audio/' + name + '.webm').then(function (r) {
+          if (!r.ok) throw 0;
+          return r.arrayBuffer();
+        }).then(function (buf) {
+          return A.ctx.decodeAudioData(buf);
+        }).then(function (b) {
+          A.files[name] = b;
+        }).catch(function () { A.missing[name] = 1; });
+      });
+      if (list && list.indexOf('music') >= 0) A.hasMusic = true;
+    }).catch(function () { SLOTS.forEach(function (n) { A.missing[n] = 1; }); });
+  };
+
+  function playBuf(b, gain, loop, bus) {
+    var src = A.ctx.createBufferSource(), g = A.ctx.createGain();
+    src.buffer = b; src.loop = !!loop;
+    g.gain.value = gain === undefined ? 0.9 : gain;
+    src.connect(g); g.connect(bus || A.master);
+    src.start();
+    return src;
+  }
+
+  /* Background loop, if assets/audio/music.webm exists. Starts on the first
+     stage, never restarts between retries — a loop that reboots on every death
+     is the fastest way to make a player mute a game. */
+  A.music = function (on) {
+    if (!A.ready) return;
+    if (!on) {
+      if (A.musicSrc) { try { A.musicSrc.stop(); } catch (e) {} A.musicSrc = null; }
+      return;
+    }
+    if (A.musicSrc) return;
+    if (A.musicBuf) { A.musicSrc = playBuf(A.musicBuf, 1, true, A.musicGain); return; }
+    if (A.musicTried || !A.hasMusic) return;      // pack.json must list "music"
+    A.musicTried = true;
+    fetch('assets/audio/music.webm').then(function (r) {
+      if (!r.ok) throw 0;
+      return r.arrayBuffer();
+    }).then(function (b) {
+      return A.ctx.decodeAudioData(b);
+    }).then(function (b) {
+      A.musicBuf = b;
+      if (!A.muted) A.musicSrc = playBuf(b, 1, true, A.musicGain);
+    }).catch(function () {});
   };
 
   A.resume = function () {
@@ -685,6 +1309,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   A.sfx = function (name) {
     if (!A.ready || A.muted) return;
     var t = A.ctx.currentTime;
+    if (A.files[name]) { playBuf(A.files[name], 0.9); return; }
     switch (name) {
       case 'coin':  ping(1180, t, 0.09, 0.22, 'triangle'); ping(1760, t + 0.055, 0.12, 0.16, 'triangle'); break;
       case 'fuel':  ping(520, t, 0.1, 0.2, 'square'); ping(700, t + 0.07, 0.1, 0.2, 'square');
@@ -698,6 +1323,28 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       case 'flip':  [660, 880, 1100, 1320].forEach(function (f, i) { ping(f, t + i * 0.06, 0.2, 0.14, 'triangle'); }); break;
       case 'click': ping(760, t, 0.06, 0.16, 'triangle'); break;
       case 'over':  [520, 440, 350, 260].forEach(function (f, i) { ping(f, t + i * 0.13, 0.3, 0.18, 'triangle'); }); break;
+      /* checkpoint: a short rising pair — heard mid-drive, so it has to cut
+         through the engine without startling. */
+      case 'check': ping(740, t, 0.1, 0.17, 'triangle'); ping(1110, t + 0.08, 0.2, 0.18, 'triangle');
+                    burst(t, 0.18, 2400, 0.08, 1); break;
+      /* stage clear: a major arpeggio with a held top note */
+      case 'win':   [523, 659, 784, 1047].forEach(function (f, i) {
+                      ping(f, t + i * 0.1, 0.32, 0.2, 'triangle');
+                    });
+                    ping(1568, t + 0.42, 0.75, 0.16, 'sine');
+                    ping(1047, t + 0.42, 0.75, 0.12, 'triangle'); break;
+      /* one star landing on the results screen */
+      case 'star':  ping(1320, t, 0.12, 0.18, 'sine'); ping(1980, t + 0.06, 0.22, 0.13, 'sine'); break;
+      /* a plank popping into being: a woody knock and a little sparkle */
+      case 'plank': ping(220, t, 0.16, 0.22, 'triangle'); burst(t, 0.12, 1800, 0.12, 2);
+                    ping(1320, t + 0.05, 0.14, 0.08, 'sine'); break;
+      /* a plank landing: heavy wood on rock */
+      case 'slam':  burst(t, 0.42, 700, 0.4, 2); ping(110, t, 0.28, 0.3, 'triangle');
+                    ping(165, t + 0.03, 0.2, 0.16, 'square'); break;
+      /* the accelerator coming back: two rising notes */
+      case 'go':    ping(660, t, 0.1, 0.16, 'triangle'); ping(990, t + 0.1, 0.22, 0.18, 'triangle'); break;
+      /* a wrong plank revealing itself */
+      case 'wrong': ping(300, t, 0.18, 0.2, 'square'); ping(210, t + 0.14, 0.3, 0.2, 'square'); break;
     }
   };
 })(CG);
@@ -710,6 +1357,11 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 (function (CG) {
   'use strict';
   var CHUNK = 800;
+  /* Nothing decorative may spawn in the start zone. A run begins with the
+     car at x=160 and the title idles it at x=300, and the body is ~245 wide,
+     so anything short of ~420 can end up drawn through the car on the first
+     frame the player sees — which is what a ramp under the title car was. */
+  var START_CLEAR = 480;
 
   /* target on-screen height in world px, per sprite */
   var PROP_H = { bush: 62, rock: 46, log: 40, crate: 46, barrel: 50, cone: 34,
@@ -725,8 +1377,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     chunks: null,
     taken: null,
 
-    init: function (seed) {
+    init: function (seed, track) {
       this.seed = seed | 0;
+      this.track = track || null;
       this.chunks = {};
       this.taken = {};
     },
@@ -739,6 +1392,14 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       return c;
     },
 
+    /* Inside a chasm's stop zone, pit or far lip nothing random may land: a
+       bush on the lip hides the plotted point, a coin in the pit is a lure. */
+    blocked: function (x) {
+      var tr = this.track, p = tr && tr.at(x);
+      if (!p || !p.gap) return false;
+      return x > p.gap.stopX - 200 && x < p.gap.bx + 130;
+    },
+
     build: function (ci) {
       var t = CG.Terrain, rnd = CG.rng((ci * 2654435761 ^ (this.seed * 40503)) >>> 0);
       var x0 = ci * CHUNK, props = [], picks = [], i, x, s;
@@ -747,8 +1408,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       var nProps = ci < 1 ? 1 : 2 + Math.floor(rnd() * 3);
       for (i = 0; i < nProps; i++) {
         x = x0 + rnd() * CHUNK;
-        if (x < 260) continue;
-        s = t.sample(x);
+        if (x < START_CLEAR || this.blocked(x)) continue;
+        s = t.gsample(x);
         if (Math.abs(s.m) > 0.55) continue;                 // nothing on cliffs
         var kind = PROP_BAG[Math.floor(rnd() * PROP_BAG.length)];
         props.push({ kind: kind, x: x, y: s.y, ang: s.ang,
@@ -756,9 +1417,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
                      flip: rnd() < 0.4, back: rnd() < 0.35 });
       }
 
-      /* ---- distance marker flag every 160 m ---- */
-      if (ci > 0 && ci % 10 === 0) {
-        s = t.sample(x0 + 40);
+      /* ---- distance marker flag every 160 m (endless only) ---- */
+      if (!this.track && ci > 0 && ci % 10 === 0) {
+        s = t.gsample(x0 + 40);
         props.push({ kind: 'flagCheck', x: x0 + 40, y: s.y, ang: s.ang, h: 96,
                      flip: false, back: false, marker: ci / 10 });
       }
@@ -769,25 +1430,116 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
         picks.push({ type: type, x: x, y: y, id: ci + ':' + (id++),
                      ph: rnd() * 6.28, r: PICK_R[type] });
       }
-      if (ci > 0 && rnd() < 0.72) {                          // a run of coins
+
+      /* ---- pathway-driven placement ----------------------------------
+         On a stage the reward follows the authored parts instead of the dice:
+         a coin arc traces the line through every jump, a gem sits on the far
+         side of the risky ones, and every checkpoint carries its own fuel can
+         so the fuel budget is a route decision rather than a lottery. */
+      var tr = this.track, k, cx, part, px, py, f;
+      if (tr) {
+        for (k = 0; k < tr.cps.length; k++) {
+          cx = tr.cps[k];
+          if (cx < x0 || cx >= x0 + CHUNK) continue;
+          s = t.gsample(cx);
+          props.push({ kind: 'flagCheck', x: cx, y: s.y, ang: s.ang, h: 108,
+                       flip: false, back: false, marker: k + 1, cp: true });
+          add('fuel', cx + 150, t.ground(cx + 150) - 56);
+        }
+        /* ---- chasm dressing: a warning sign where the car will be held, a
+           rock on each lip so the drop reads from a distance, and three coins
+           on the far side as the reason to get across ---- */
+        for (k = 0; k < tr.chasms.length; k++) {
+          var g = tr.chasms[k];
+          if (g.stopX - 330 >= x0 && g.stopX - 330 < x0 + CHUNK) {
+            s = t.gsample(g.stopX - 330);
+            props.push({ kind: 'signpost', x: g.stopX - 330, y: s.y, ang: 0, h: 78,
+                         flip: false, back: true, label: 'MIND THE GAP' });
+          }
+          if (g.ax - 34 >= x0 && g.ax - 34 < x0 + CHUNK) {
+            props.push({ kind: 'rock', x: g.ax - 34, y: g.ay, ang: 0, h: 40, flip: false, back: true });
+          }
+          if (g.bx + 40 >= x0 && g.bx + 40 < x0 + CHUNK) {
+            props.push({ kind: 'rock', x: g.bx + 40, y: g.by, ang: 0, h: 44, flip: true, back: true });
+            props.push({ kind: 'bush', x: g.bx + 96, y: g.by, ang: 0, h: 56, flip: false, back: true });
+          }
+          for (i = 0; i < 3; i++) {
+            px = g.bx + 180 + i * 56;
+            if (px >= x0 && px < x0 + CHUNK) add('coin', px, g.by - 60);
+          }
+        }
+        part = tr.at(x0);
+        for (k = part ? part.index : tr.parts.length; k < tr.parts.length; k++) {
+          part = tr.parts[k];
+          if (part.x0 >= x0 + CHUNK) break;
+          if (part.x0 < x0) continue;                  // placed by an earlier chunk
+          if (part.x0 > tr.finishX) break;             // nothing past the line
+          var air = part.tags.indexOf('air') >= 0;
+          var risk = part.tags.indexOf('risk') >= 0;
+          var grind = part.tags.indexOf('grind') >= 0;
+          if (air) {
+            /* an arc of coins along the flight path, starting at the lip */
+            var n2 = 6, t0 = 0.42, t1 = 0.86;
+            for (i = 0; i < n2; i++) {
+              f = i / (n2 - 1);
+              px = part.x0 + part.len * CG.lerp(t0, t1, f);
+              py = t.ground(px) - 70 - Math.sin(f * Math.PI) * 120;
+              add('coin', px, Math.min(py, t.ground(px) - 60));
+            }
+          }
+          if (risk) {
+            px = part.x0 + part.len * 0.78;
+            add('gem', px, t.ground(px) - 66);
+          }
+          if (grind) {
+            px = part.x0 + part.len * 0.08;
+            add('boost', px, t.ground(px) - 58);
+          }
+        }
+      }
+      /* nothing is placed past the finish line — the run-out is for stopping */
+      var pastLine = this.track ? x0 > this.track.finishX - 200 : false;
+      if (!pastLine && ci > 0 && rnd() < 0.72) {              // a run of coins
         var n = 4 + Math.floor(rnd() * 4), gap = 52 + rnd() * 18;
         var sx = x0 + 60 + rnd() * (CHUNK - n * gap - 120);
         var lift = 46 + rnd() * 46, arc = rnd() < 0.4 ? 62 : 0;
         for (i = 0; i < n; i++) {
           x = sx + i * gap;
           var f = i / (n - 1);
-          add('coin', x, CG.Terrain.y(x) - lift - Math.sin(f * Math.PI) * arc);
+          if (this.blocked(x)) continue;
+          add('coin', x, t.ground(x) - lift - Math.sin(f * Math.PI) * arc);
         }
       }
-      if (ci > 1 && ci % 5 === 1) {                          // fuel, reliably
-        x = x0 + 200 + rnd() * 400;
-        add('fuel', x, CG.Terrain.y(x) - 56);
+      /* Endless drip-feeds fuel every 5 chunks. A stage does not: its cans sit
+         at the checkpoints, so the tank is a route budget the stage is tuned
+         around rather than a lottery. */
+      var W2 = this;
+      function addFree(type, x, dy) { if (!W2.blocked(x)) add(type, x, t.ground(x) - dy); }
+      if (!pastLine && ci > 1 && ci % (this.track ? 12 : 5) === 1) {
+        addFree('fuel', x0 + 200 + rnd() * 400, 56);
       }
-      if (ci > 2 && rnd() < 0.14) { x = x0 + rnd() * CHUNK; add('gem', x, CG.Terrain.y(x) - 62); }
-      if (ci > 2 && rnd() < 0.16) { x = x0 + rnd() * CHUNK; add('boost', x, CG.Terrain.y(x) - 58); }
-      if (ci > 4 && rnd() < 0.07) { x = x0 + rnd() * CHUNK; add('heart', x, CG.Terrain.y(x) - 58); }
-      if (ci > 3 && rnd() < 0.05) { x = x0 + rnd() * CHUNK; add('star', x, CG.Terrain.y(x) - 74); }
+      if (!pastLine) {
+        if (ci > 2 && rnd() < 0.14) addFree('gem', x0 + rnd() * CHUNK, 62);
+        if (ci > 2 && rnd() < 0.16) addFree('boost', x0 + rnd() * CHUNK, 58);
+        if (ci > 4 && rnd() < 0.07) addFree('heart', x0 + rnd() * CHUNK, 58);
+        if (ci > 3 && rnd() < 0.05) addFree('star', x0 + rnd() * CHUNK, 74);
+      }
 
+      /* ---- hedgerow: a few more bushes just behind the ridge, so the painted
+         tree row behind them never lines up with itself twice. They are WORLD
+         props on the real ground, drawn behind the cap: a screen-space
+         parallax row was tried first and on rolling country it floated above
+         the slope or sank into it, because a thing can only stand on ground
+         it is attached to. Placed last so the dice above roll the same. ---- */
+      var nHedge = 2 + Math.floor(rnd() * 3);
+      for (i = 0; i < nHedge; i++) {
+        x = x0 + rnd() * CHUNK;
+        if (x < START_CLEAR || this.blocked(x)) continue;
+        s = t.gsample(x);
+        if (Math.abs(s.m) > 0.7) continue;
+        props.push({ kind: 'bush', x: x, y: s.y + 6, ang: s.ang,
+                     h: 40 + rnd() * 32, flip: rnd() < 0.5, back: true });
+      }
       return { i: ci, x0: x0, props: props, picks: picks };
     },
 
@@ -865,6 +1617,106 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   };
 })(CG);
 
+/* =================================== ENV ====================================
+   Where and when the run is: which season the scenery is in, how far into the
+   next one it has faded, what hour it is, and what is falling out of the sky.
+   All of it is a function of DISTANCE, not of wall time — pause the game and
+   the sun waits; replay a seed and the same storm hits at the same metre.
+   Nothing here touches the physics: the world the wheels see is the same in
+   a blizzard at midnight as in summer at noon. The renderer reads this. */
+(function (CG) {
+  'use strict';
+  var SEASON_M = 700;      // metres per season
+  var FADE_M = 150;        // ...of which the last this many crossfade into the next
+  var DAY_M = 1600;        // metres per full day
+  var WX_M = 320;          // one weather decision per this many metres
+  var START_CLOCK = 0.34;  // mid-morning: a run starts in daylight
+
+  /* what each season's sky does, as cumulative odds over [clear, rain, fog, snow] */
+  var ODDS = {
+    spring: [0.55, 0.85, 1.00, 1.00],
+    summer: [0.75, 0.90, 1.00, 1.00],
+    autumn: [0.40, 0.65, 1.00, 1.00],
+    winter: [0.35, 0.35, 0.50, 1.00]
+  };
+  var KINDS = ['clear', 'rain', 'fog', 'snow'];
+
+  var E = CG.Env = {
+    seed: 1,
+    a: 'spring', b: 'spring', mix: 0,   // this season, the next, and the fade
+    season: 'spring',                   // the one the weather is drawn from
+    clock: START_CLOCK,                 // 0..1, 0 = midnight, 0.5 = noon
+    sun: 1,                             // cos of the sun's angle: 1 noon, -1 midnight
+    night: 0,                           // 0..1 how dark it is
+    dusk: 0,                            // 0..1 how much low warm sun there is
+    weather: 'clear', wx: 0,            // what is falling, and how hard (0..1)
+    target: 'clear', segment: -1,
+    force: null                         // debug: { season, clock, weather }
+  };
+
+  /* the seasons that actually have art, in cycle order */
+  E.available = function () {
+    var out = [];
+    for (var i = 0; i < CG.SEASONS.length; i++) {
+      if (CG.themes[CG.SEASONS[i]]) out.push(CG.SEASONS[i]);
+    }
+    return out.length ? out : ['spring'];
+  };
+
+  E.reset = function (seed) {
+    E.seed = seed | 0;
+    E.segment = -1; E.weather = 'clear'; E.target = 'clear'; E.wx = 0;
+    E.update(0, 0);
+  };
+
+  E.update = function (dist, dt) {
+    var f = E.force || {};
+    var list = E.available(), n = list.length;
+
+    /* season and crossfade */
+    var s = Math.floor(dist / SEASON_M), into = dist - s * SEASON_M;
+    E.a = f.season || list[s % n];
+    E.b = f.season || list[(s + 1) % n];
+    E.mix = f.season ? 0 : CG.smoothstep(SEASON_M - FADE_M, SEASON_M, into);
+    if (E.a === E.b) E.mix = 0;
+    E.season = E.mix < 0.5 ? E.a : E.b;
+
+    /* hour: the sun goes round once per DAY_M */
+    E.clock = f.clock !== undefined ? f.clock : (START_CLOCK + dist / DAY_M) % 1;
+    E.sun = Math.cos((E.clock - 0.5) * CG.TAU);
+    E.night = CG.smoothstep(-0.05, -0.55, E.sun);
+    var t = E.sun / 0.28;
+    E.dusk = Math.exp(-t * t);          // a bell around the horizon crossing
+
+    /* weather: one draw per segment, from the odds of the season it started in */
+    var seg = Math.floor(dist / WX_M);
+    if (seg !== E.segment) {
+      E.segment = seg;
+      var odds = ODDS[E.season] || ODDS.spring;
+      var r = CG.hash1(seg + 1, 7331 + E.seed), k = 0;
+      while (k < 3 && r > odds[k]) k++;
+      E.target = seg === 0 ? 'clear' : KINDS[k];   // a run always starts dry
+    }
+    if (f.weather) { E.target = f.weather; }
+    /* ramp down the old weather before the new one ramps up */
+    if (E.weather !== E.target) {
+      E.wx = Math.max(0, E.wx - dt * 0.4);
+      if (E.wx === 0) E.weather = E.target;
+    } else if (E.weather !== 'clear') {
+      E.wx = Math.min(1, E.wx + dt * 0.3);
+    }
+  };
+
+  /* a label for the HUD: SUMMER · RAIN · NIGHT */
+  E.label = function () {
+    var hour = E.night > 0.6 ? 'NIGHT' : E.dusk > 0.45 ? (E.clock < 0.5 ? 'DAWN' : 'DUSK')
+             : E.night > 0.2 ? 'DUSK' : 'DAY';
+    var s = E.season.toUpperCase() + ' · ' + hour;
+    if (E.weather !== 'clear' && E.wx > 0.2) s += ' · ' + E.weather.toUpperCase();
+    return s;
+  };
+})(CG);
+
 /* ================================== RENDER ================================= */
 (function (CG) {
   'use strict';
@@ -872,7 +1724,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   var R = CG.R = {
     canvas: null, ctx: null, W: 1280, H: 720, dpr: 1,
     cam: { x: 0, y: 0, z: 1 },
-    shake: 0,
+    shake: 0, ox: 0, oy: 0,
     quality: 1,
     cache: {}
   };
@@ -915,7 +1767,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      second at speed, which reads as the ground racing past; at 627 world px
      (~12.5m) the soil scrolls calmly and the painted stones sit at close to
      their authored size. Halving is also a clean 2:1 downscale. */
-  var dirtPat = null, patTile = 627;
+  var dirtPats = {}, patTile = 627;
 
   R.attach = function (canvas) {
     R.canvas = canvas;
@@ -963,12 +1815,18 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     R.resize();
   };
 
+  /* The shake offset is held in whole backing-store pixels (R.ox/R.oy) because
+     the background rows lay their tiles out in backing pixels — see tileRow.
+     A fractional offset would re-open every one of those joins for as long as
+     the screen was shaking. */
   R.begin = function () {
-    var c = R.ctx;
-    c.setTransform(R.scale, 0, 0, R.scale, 0, 0);
+    var c = R.ctx, ox = 0, oy = 0;
     if (R.shake > 0.01) {
-      c.translate((Math.random() - 0.5) * R.shake, (Math.random() - 0.5) * R.shake);
+      ox = Math.round((Math.random() - 0.5) * R.shake * R.scale);
+      oy = Math.round((Math.random() - 0.5) * R.shake * R.scale);
     }
+    R.ox = ox; R.oy = oy;
+    c.setTransform(R.scale, 0, 0, R.scale, ox, oy);
   };
 
   /* world -> screen */
@@ -976,10 +1834,14 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   R.sy = function (y) { return (y - R.cam.y) * R.cam.z + R.H / 2; };
 
   /* ------------------------------------------------------------- background */
-  /* mirror: hills_mid is the one layer whose left and right edges do not meet
-     (measured 23x the interior column difference — a visible vertical seam).
-     Flipping alternate tiles makes the join exact, and it is safe here because
-     the layer is hazed and has no strongly directional highlights. */
+  /* mirror: flipping alternate tiles doubles a layer's period. On hills_mid
+     that also made its join exact (its two edges were the one pair that did
+     not meet); on trees_near the edges already meet, and the flip is there
+     purely for the period — one tile is 864 units wide against a ~1200-unit
+     view, so unmirrored the same three cherry trees came round about every
+     two seconds of driving. Both layers are hazed and carry no strongly
+     directional highlights, so a flipped copy reads as more of the same
+     hedgerow rather than as a reflection. */
   /* `top` is the fraction of the source image that is fully transparent above
      the artwork (measured, with a 10px margin). Those rows are cropped out of
      the pre-scaled tile, so each frame blends only real pixels — the three
@@ -987,65 +1849,333 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   var LAYERS = [
     { k: 'hillsFar',  f: 0.10, yOff: 74,  hf: 0.62, top: 618 / 887 },
     { k: 'hillsMid',  f: 0.20, yOff: 126, hf: 0.72, top: 508 / 887, mirror: true },
-    { k: 'treesNear', f: 0.42, yOff: 196, hf: 0.60, top: 312 / 887 }
+    { k: 'treesNear', f: 0.42, yOff: 196, hf: 0.60, top: 312 / 887, mirror: true }
   ];
 
+  /* A tile row is laid out in BACKING-STORE pixels, not in renderer units.
+     R.scale is fractional on nearly every display (a 883px-tall viewport over
+     a 720-unit design height at dpr 1.75 gives 2.146), so a join at unit x
+     lands between two real pixels: the left tile covers ~35% of that pixel,
+     the right tile the other ~65%, and compositing them one after the other
+     leaves ~23% of whatever is behind them still showing through. Over an
+     opaque bush against a darker sky that is a dark hairline straight down
+     the join — the line that makes one painted row read as separate pasted
+     cut-outs. Rounding the tile size and every tile origin to whole backing
+     pixels makes the joins exact. The cached tile is built at the device size
+     too, capped at the art's own resolution so nothing is stored upscaled —
+     for the three parallax layers that turns the per-frame blit from a 2.1x
+     upscale into very nearly a 1:1 copy, so they also come out sharper. */
   function tileRow(key, img, xScroll, bottomY, h, mirror, top) {
-    var c = R.ctx, tw = Math.round(h * (img.width / img.height));
-    if (tw < 8) return;
+    var c = R.ctx, s = R.scale;
+    var twD = Math.round(h * (img.width / img.height) * s);
+    if (twD < 8) return;
     if (top) h = h * (1 - top);            // drop the empty rows, keep bottomY
-    var tile = scaled(key, img, tw, h, top ? Math.round(top * img.height) : 0);
-    var th = tile.height, y = Math.round(bottomY - th);
-    var period = mirror ? tw * 2 : tw;
-    var x = -(((xScroll % period) + period) % period), i = 0;
-    for (; x < R.W; x += tw, i++) {
+    var thD = Math.max(1, Math.round(h * s));
+    var bw = Math.min(twD, img.width);     // never cache an upscale
+    var tile = scaled(key, img, bw, thD * bw / twD,
+                      top ? Math.round(top * img.height) : 0);
+    var yD = Math.round(bottomY * s) - thD;
+    var period = mirror ? twD * 2 : twD;
+    var xD = -(((Math.round(xScroll * s) % period) + period) % period), i = 0;
+    var edge = R.canvas.width - R.ox;      // last backing column to reach
+    /* ...and the first, once shake pushes the row right. A whole PERIOD, so a
+       mirrored row keeps the same tiles facing the same way through a shake. */
+    if (R.ox > 0) xD -= period;
+    c.save();
+    c.setTransform(1, 0, 0, 1, R.ox, R.oy);
+    for (; xD < edge; xD += twD, i++) {
       if (mirror && (i & 1)) {
-        c.save();
-        c.translate(Math.round(x) + tw, y);
-        c.scale(-1, 1);
-        c.drawImage(tile, 0, 0);
-        c.restore();
+        c.setTransform(-1, 0, 0, 1, xD + twD + R.ox, R.oy);
+        c.drawImage(tile, 0, yD, twD, thD);
+        c.setTransform(1, 0, 0, 1, R.ox, R.oy);
       } else {
-        c.drawImage(tile, Math.round(x), y);
+        c.drawImage(tile, xD, yD, twD, thD);
       }
+    }
+    c.restore();
+  }
+
+  /* Everything painted behind the world, in three passes that each fade:
+     the sky of this season under the sky of the next; night laid over both
+     (the shared night-sky art if it is installed, a plain deep gradient if
+     not) with a field of stars and a moon; then the three parallax rows for
+     this season, and the next season's rows over them at the crossfade. The
+     cache keys carry the season name, so each pack's pre-scaled tiles are
+     kept separately and a crossfade never rebuilds them. */
+  function drawSky(pack, name, alpha) {
+    var c = R.ctx, cam = R.cam, sky = pack.sky;
+    if (!sky) return;
+    c.globalAlpha = alpha;
+    var sh = Math.max(R.H * 1.15, R.VU * 1.7);
+    var sy = R.H * 0.5 - sh * 0.62 + (CG.BASE_Y - cam.y) * 0.05;
+    tileRow('sky@' + name, sky, cam.x * 0.04, sy + sh, sh);
+    /* the sky art is not tall enough to cover a big climb — cap the gap */
+    if (sy > 0) c.drawImage(sky, 0, 0, sky.width, 2, 0, 0, R.W, sy + 1);
+  }
+
+  function drawLayers(pack, name, alpha) {
+    var c = R.ctx, cam = R.cam, i, L, im;
+    c.globalAlpha = alpha;
+    for (i = 0; i < LAYERS.length; i++) {
+      L = LAYERS[i];
+      im = pack[L.k];
+      if (!im) continue;
+      tileRow(L.k + '@' + name, im, cam.x * L.f,
+              R.H * 0.5 + L.yOff + (CG.BASE_Y - cam.y) * L.f,
+              R.VU * L.hf, L.mirror, L.top);
     }
   }
 
-  R.drawBackground = function () {
-    var c = R.ctx, cam = R.cam, i, L;
-    c.fillStyle = '#0288D1';
-    c.fillRect(0, 0, R.W, R.H);
-
-    var sky = CG.img.sky;
-    if (sky) {
-      var sh = Math.max(R.H * 1.15, R.VU * 1.7);
-      var sy = R.H * 0.5 - sh * 0.62 + (CG.BASE_Y - cam.y) * 0.05;
-      tileRow('sky', sky, cam.x * 0.04, sy + sh, sh);
-      /* the sky art is not tall enough to cover a big climb — cap the gap */
-      if (sy > 0) { c.fillStyle = '#0288D1'; c.fillRect(0, 0, R.W, sy + 1); }
+  /* one tile of stars, drawn once; tiled with the slowest parallax there is */
+  function starTile() {
+    var e = R.cache.stars;
+    if (e) return e;
+    var cv = document.createElement('canvas');
+    cv.width = cv.height = 512;
+    var x = cv.getContext('2d');
+    for (var i = 0; i < 150; i++) {
+      var r1 = CG.hash1(i, 11), r2 = CG.hash1(i, 12), r3 = CG.hash1(i, 13);
+      var rad = 0.7 + r3 * r3 * 1.9;
+      x.globalAlpha = 0.45 + r3 * 0.55;
+      x.fillStyle = r1 < 0.15 ? '#CFE3FF' : r1 < 0.25 ? '#FFE9C4' : '#FFFFFF';
+      x.beginPath(); x.arc(r1 * 512, r2 * 512, rad, 0, CG.TAU); x.fill();
     }
-    for (i = 0; i < LAYERS.length; i++) {
-      L = LAYERS[i];
-      var im = CG.img[L.k];
-      if (!im) continue;
-      tileRow(L.k, im, cam.x * L.f, R.H * 0.5 + L.yOff + (CG.BASE_Y - cam.y) * L.f,
-              R.VU * L.hf, L.mirror, L.top);
+    R.cache.stars = cv;
+    return cv;
+  }
+
+  function drawNight(night) {
+    if (night <= 0.005) return;
+    var c = R.ctx, cam = R.cam, E = CG.Env;
+    var sh = Math.max(R.H * 1.15, R.VU * 1.7);
+    var sy = R.H * 0.5 - sh * 0.62 + (CG.BASE_Y - cam.y) * 0.05;
+    c.globalAlpha = night;
+    var ns = CG.img.nightSky;
+    if (ns) {
+      tileRow('sky@night', ns, cam.x * 0.04, sy + sh, sh);
+      if (sy > 0) c.drawImage(ns, 0, 0, ns.width, 2, 0, 0, R.W, sy + 1);
+    } else {
+      var g = R.cache.nightG;
+      if (!g || g.h !== R.H) {
+        g = c.createLinearGradient(0, 0, 0, R.H);
+        g.addColorStop(0, '#070B22');
+        g.addColorStop(0.55, '#141A44');
+        g.addColorStop(1, '#2A2C5C');
+        g.h = R.H; R.cache.nightG = g;
+      }
+      c.fillStyle = g;
+      c.fillRect(0, 0, R.W, R.H);
+    }
+    /* stars fade in later than the dark does, the way they do */
+    var st = CG.smoothstep(0.35, 1, night);
+    if (st > 0) {
+      c.globalAlpha = st * 0.9;
+      var tile = starTile(), sx = -(((cam.x * 0.015) % 512) + 512) % 512;
+      var top = Math.max(-40, sy), bottom = R.H * 0.5 + 80 + (CG.BASE_Y - cam.y) * 0.1;
+      c.save();
+      c.beginPath(); c.rect(0, 0, R.W, bottom); c.clip();
+      for (var x = sx; x < R.W; x += 512) {
+        for (var y = top - (((top % 512) + 512) % 512); y < bottom; y += 512) {
+          c.drawImage(tile, Math.round(x), Math.round(y));
+        }
+      }
+      c.restore();
+      /* the moon, high and slow, with its own glow */
+      var mx = R.W * 0.72 - ((cam.x * 0.008) % (R.W * 1.4)), my = R.H * 0.16 + (CG.BASE_Y - cam.y) * 0.05;
+      if (mx < -80) mx += R.W * 1.4;
+      var rad = Math.max(18, R.VU * 0.04);
+      var glow = c.createRadialGradient(mx, my, rad * 0.6, mx, my, rad * 4);
+      glow.addColorStop(0, 'rgba(255,246,214,0.35)');
+      glow.addColorStop(1, 'rgba(255,246,214,0)');
+      c.globalAlpha = st;
+      c.fillStyle = glow;
+      c.fillRect(mx - rad * 4, my - rad * 4, rad * 8, rad * 8);
+      c.fillStyle = '#FFF6D6';
+      c.beginPath(); c.arc(mx, my, rad, 0, CG.TAU); c.fill();
+      c.fillStyle = 'rgba(214,206,180,0.35)';
+      c.beginPath(); c.arc(mx - rad * 0.3, my + rad * 0.15, rad * 0.28, 0, CG.TAU); c.fill();
+      c.beginPath(); c.arc(mx + rad * 0.35, my - rad * 0.3, rad * 0.18, 0, CG.TAU); c.fill();
+    }
+    c.globalAlpha = 1;
+  }
+
+  R.drawBackground = function () {
+    var c = R.ctx, E = CG.Env;
+    var A = CG.themes[E.a] || CG.themes.spring, B = CG.themes[E.b] || A;
+    if (!A) {
+      c.fillStyle = '#2F4A93';
+      c.fillRect(0, 0, R.W, R.H);
+      return;
+    }
+    c.save();
+    /* #2F4A93 is the top row of the spring sky; only seen if a sky is missing */
+    c.fillStyle = '#2F4A93';
+    c.fillRect(0, 0, R.W, R.H);
+    drawSky(A, E.a, 1);
+    if (E.mix > 0 && B !== A) drawSky(B, E.b, E.mix);
+    drawNight(E.night);
+    drawLayers(A, E.a, 1);
+    if (E.mix > 0 && B !== A) drawLayers(B, E.b, E.mix);
+    c.restore();
+  };
+
+  /* The horizon the ground haze sits on: the terrain averaged over 2 km
+     around the camera, so the band rides the hills and ignores the bumps.
+     (The middle-distance bushes that used to stand here are world props now —
+     see the hedgerow in World.build — because a screen-space row cannot sit
+     on a slope it is not attached to.) */
+  R.horizon = function () {
+    var t = 0, k;
+    for (k = -6; k <= 6; k++) t += CG.Terrain.ground(R.cam.x + k * 170);
+    R.hz = R.sy(t / 13);
+    return R.hz;
+  };
+
+  /* Where the painted distance meets the ground the two simply stop against
+     each other on a straight line all the way across. A short band of the
+     sun's own warmth, sitting on that line and fading both ways, dissolves
+     the cut the way haze does over real ground. */
+  R.drawGroundHaze = function () {
+    var c = R.ctx;
+    var y = R.hz !== undefined ? R.hz : R.sy(CG.Terrain.ground(R.cam.x));
+    if (y < -60 || y > R.H + 60) return;
+    var e = R.cache.haze;
+    if (!e || e.h !== R.H) {
+      var g = c.createLinearGradient(0, -78, 0, 62);
+      g.addColorStop(0.00, 'rgba(255,214,164,0)');
+      g.addColorStop(0.55, 'rgba(255,214,164,0.15)');
+      g.addColorStop(1.00, 'rgba(255,214,164,0)');
+      e = R.cache.haze = { g: g, h: R.H };
+    }
+    c.save();
+    c.globalAlpha = 1 - CG.Env.night * 0.85;       // no warm haze at night
+    c.translate(0, y);
+    c.fillStyle = e.g;
+    c.fillRect(0, -78, R.W, 140);
+    c.restore();
+  };
+
+  /* ------------------------------------------------------------ colour grade
+     Every sprite in the game — jeep, driver, props, pickups — is painted for
+     midday, and re-rendering thirty of them for one theme is not worth it. One
+     pass over the finished world sells the hour instead: a warm screen for the
+     low sun, a violet multiply for the shade it leaves behind. Drawn after the
+     world and before the HUD, so the interface keeps its own contrast. */
+  /* The grade is now a function of the hour and the weather rather than a
+     fixed evening. By day it is nearly neutral; around sunrise and sunset a
+     warm screen and a violet shade come up together (the old evening look,
+     at its peak); at night a deep blue multiply takes most of the light out
+     and the headlamps do the rest. Weather sits on top: rain greys and cools,
+     fog lifts everything toward pale, snow lifts it toward cold white. */
+  R.drawGrade = function () {
+    var c = R.ctx, E = CG.Env, W = R.W, H = R.H;
+    var wx = E.wx, rain = E.weather === 'rain' ? wx : 0;
+    var fog = E.weather === 'fog' ? wx : 0, snow = E.weather === 'snow' ? wx : 0;
+    c.save();
+    c.globalCompositeOperation = 'screen';
+    var warm = 0.03 + 0.15 * E.dusk;
+    c.fillStyle = 'rgba(255,179,92,' + warm.toFixed(3) + ')';
+    c.fillRect(0, 0, W, H);
+    if (fog > 0 || snow > 0) {
+      c.fillStyle = 'rgba(222,228,240,' + (0.16 * fog + 0.10 * snow).toFixed(3) + ')';
+      c.fillRect(0, 0, W, H);
+    }
+    c.globalCompositeOperation = 'multiply';
+    var cool = 0.03 + 0.09 * E.dusk;
+    c.fillStyle = 'rgba(107,94,155,' + cool.toFixed(3) + ')';
+    c.fillRect(0, 0, W, H);
+    if (rain > 0) {
+      c.fillStyle = 'rgba(96,112,140,' + (0.28 * rain).toFixed(3) + ')';
+      c.fillRect(0, 0, W, H);
+    }
+    if (E.night > 0) {
+      c.fillStyle = 'rgba(26,36,92,' + (0.62 * E.night).toFixed(3) + ')';
+      c.fillRect(0, 0, W, H);
+    }
+    c.restore();
+  };
+
+  /* ---------------------------------------------------------------- weather
+     Screen-space, and cheap: rain is a few hundred short lines slanted by the
+     car's own speed, snow is soft dots on a slow sine drift with the bigger
+     (nearer) flakes falling faster, fog is two pale bands that hug the ground
+     line and breathe. The pools are sized by intensity, so a shower starts
+     as a few drops and a storm fills in. */
+  var drops = [], flakes = [];
+  R.drawWeather = function (dt) {
+    var E = CG.Env, c = R.ctx, W = R.W, H = R.H, i, p, n;
+    if (E.weather === 'clear' || E.wx <= 0) return;
+    var vx = CG.Game.v ? CG.Game.v.vx : 0;
+    if (E.weather === 'rain') {
+      n = Math.round(260 * E.wx * (W / 1200));
+      while (drops.length < n) drops.push({ x: Math.random() * W, y: Math.random() * H, l: 14 + Math.random() * 16, s: 0.7 + Math.random() * 0.5 });
+      if (drops.length > n) drops.length = n;
+      var slant = -vx * 0.35 * dt;
+      c.save();
+      c.strokeStyle = 'rgba(205,222,255,0.42)';
+      c.lineWidth = 1.5;
+      c.beginPath();
+      for (i = 0; i < drops.length; i++) {
+        p = drops[i];
+        p.y += (900 * p.s) * dt; p.x += slant * p.s - 40 * dt;
+        if (p.y > H + 20) { p.y = -20 - Math.random() * 40; p.x = Math.random() * W; }
+        if (p.x < -20) p.x += W + 40; else if (p.x > W + 20) p.x -= W + 40;
+        var dx = (slant - 40 * dt) * 0.9, dy = 900 * p.s * dt;
+        var k = p.l / Math.max(1, Math.hypot(dx, dy));
+        c.moveTo(p.x, p.y);
+        c.lineTo(p.x - dx * k, p.y - dy * k);
+      }
+      c.stroke();
+      c.restore();
+    } else if (E.weather === 'snow') {
+      n = Math.round(220 * E.wx * (W / 1200));
+      while (flakes.length < n) flakes.push({ x: Math.random() * W, y: Math.random() * H, r: 1.2 + Math.random() * 2.6, ph: Math.random() * 6.3 });
+      if (flakes.length > n) flakes.length = n;
+      c.save();
+      c.fillStyle = 'rgba(255,255,255,0.85)';
+      for (i = 0; i < flakes.length; i++) {
+        p = flakes[i];
+        p.ph += dt * 1.4;
+        p.y += (40 + p.r * 28) * dt;
+        p.x += Math.sin(p.ph) * 22 * dt - vx * 0.08 * dt * p.r;
+        if (p.y > H + 10) { p.y = -10; p.x = Math.random() * W; }
+        if (p.x < -10) p.x += W + 20; else if (p.x > W + 10) p.x -= W + 20;
+        c.beginPath(); c.arc(p.x, p.y, p.r, 0, CG.TAU); c.fill();
+      }
+      c.restore();
+    } else if (E.weather === 'fog') {
+      var y = R.sy(CG.Terrain.ground(R.cam.x));
+      var t = CG.Game.time || 0;
+      c.save();
+      for (i = 0; i < 2; i++) {
+        var yy = y - 40 + i * 70 + Math.sin(t * 0.5 + i * 2) * 8;
+        var g = c.createLinearGradient(0, yy - 90, 0, yy + 60);
+        g.addColorStop(0, 'rgba(226,231,240,0)');
+        g.addColorStop(0.5, 'rgba(226,231,240,' + (0.28 * E.wx).toFixed(3) + ')');
+        g.addColorStop(1, 'rgba(226,231,240,0)');
+        c.fillStyle = g;
+        c.fillRect(0, yy - 90, W, 150);
+      }
+      c.restore();
     }
   };
 
   R.drawForeground = function () {
-    var im = CG.img.fgGrass;
-    if (!im) return;
-    var c = R.ctx, h = 132;
+    var E = CG.Env, c = R.ctx, h = 132;
+    var A = CG.themes[E.a] || CG.themes.spring, B = CG.themes[E.b] || A;
+    if (!A || !A.fgGrass) return;
     c.save();
     c.globalAlpha = 0.92;
-    tileRow('fg', im, R.cam.x * 1.12, R.H + 14, h, false, 232 / 724);
+    tileRow('fg@' + E.a, A.fgGrass, R.cam.x * 1.12, R.H + 14, h, false, 232 / 724);
+    if (E.mix > 0 && B !== A && B.fgGrass) {
+      c.globalAlpha = 0.92 * E.mix;
+      tileRow('fg@' + E.b, B.fgGrass, R.cam.x * 1.12, R.H + 14, h, false, 232 / 724);
+    }
     c.restore();
   };
 
   /* ---------------------------------------------------------------- terrain */
-  function makeDirtPattern() {
-    var src = CG.img.dirt;
+  function makeDirtPattern(src) {
     if (!src) return null;
     /* Downscaling in one step resamples the tile's edge pixels without their
        wrapped neighbours, which leaves a faint grid every tile. Lay the source
@@ -1070,8 +2200,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      a gradient drawn per slice compounds wherever slices overlap and leaves
      vertical ribbing. Baking it in also lets the bottom rows fade out, so the
      cap melts into the tiled soil instead of ending on a hard line. */
-  function makeCapTile(tw, th) {
-    var gt = CG.img.grassTop;
+  function makeCapTile(tw, th, gt) {
     if (!gt) return null;
     /* Two copies side by side: a slice near the end of the tile can then read
        past the period without wrapping. Clamping the source x instead left a
@@ -1087,7 +2216,11 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     g.addColorStop(0.40, 'rgba(43,33,24,0.05)');
     g.addColorStop(1, 'rgba(43,33,24,0.32)');
     oc.fillStyle = g;
-    oc.fillRect(0, 0, tw, th);
+    /* BOTH copies: the ribbon reads past tw on purpose, so shading only the
+       first one left every slice that crossed the period a shade lighter than
+       its neighbours — a bright vertical band, one slice wide, once per 840
+       world px of ground. */
+    oc.fillRect(0, 0, off.width, th);
     /* The cap must stay FULLY OPAQUE. Slices have to overlap to be watertight
        (see drawTerrain), and any semi-transparent rows would double up in the
        overlaps as dark streaks. So the bottom rows are blended in RGB toward
@@ -1104,16 +2237,16 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 
   /* Rebuilt only when the quantised zoom step changes, so the ribbon can blit
      the cap at 1:1 without resampling the source rows per slice. */
-  function capFor(z) {
+  function capFor(z, name, pack) {
     var qz = Math.round(z * 40) / 40;
-    var e = R.cache.cap;
+    var e = R.cache['cap@' + name];
     if (e && e.qz === qz) return e;
     var tw = Math.max(8, Math.round(GRASS_WORLD_W * qz));
     var th = Math.max(2, Math.round(GRASS_CAP * qz));
-    var cv = makeCapTile(tw, th);
+    var cv = makeCapTile(tw, th, pack.grassTop);
     if (!cv) return null;
     e = { qz: qz, c: cv, w: tw, h: th, per: tw / GRASS_WORLD_W };
-    R.cache.cap = e;
+    R.cache['cap@' + name] = e;
     return e;
   }
 
@@ -1125,7 +2258,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var n = 0, x;
     for (x = wl; x <= wr + step; x += step) {
       var p = pts[n] || (pts[n] = {});
-      p.wx = x; p.wy = CG.Terrain.y(x);
+      p.wx = x; p.wy = CG.Terrain.ground(x);
       p.x = R.sx(x); p.y = R.sy(p.wy);
       n++;
     }
@@ -1133,10 +2266,67 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     return pts;
   };
 
+  /* The soil fill for one season's pack, inside the clip the caller set. */
+  function fillDirt(pack, name, alpha) {
+    var c = R.ctx, z = R.cam.z;
+    var pat = dirtPats[name];
+    if (pat === undefined) pat = dirtPats[name] = makeDirtPattern(pack.dirt);
+    c.globalAlpha = alpha;
+    if (pat) {
+      /* World-locked: the soil scrolls at exactly the surface's rate. A
+         screen-locked soil was tried (quieter under the grass) and rejected:
+         with the grass line streaming past a texture that stands still, the
+         two rates disagree and the sense of speed goes with them. */
+      var ox = -(R.cam.x * z) % patTile, oy = -(R.cam.y * z) % patTile;
+      c.fillStyle = pat;
+      c.translate(ox, oy);
+      c.fillRect(-ox - patTile, -oy - patTile, R.W + patTile * 2, R.H + patTile * 2);
+      c.translate(-ox, -oy);
+    } else {
+      c.fillStyle = '#8D6E63';
+      c.fillRect(0, 0, R.W, R.H);
+    }
+  }
+
+  /* Grass cap: a ribbon of slices, each rotated to the local slope so the
+     strip follows the ground exactly.
+
+     Each slice is a rectangle rotated about ITS OWN surface point, so where
+     the terrain curves, neighbouring slices splay apart and open a thin
+     wedge down to the full depth of the cap — which showed up as dark
+     streaks hanging into the soil. The fix is to overrun each slice by CAP_PAD
+     at both ends so neighbours always overlap by more than any wedge can
+     open. The overrun is applied to the source and destination equally, so
+     the blit stays 1:1, and the cap is opaque, so overlapping is invisible. */
+  function drawCap(p, cap, alpha) {
+    var c = R.ctx, i;
+    c.globalAlpha = alpha;
+    for (i = 0; i < p.length - 1; i++) {
+      var a = p[i], b = p[i + 1];
+      var dx = b.x - a.x, dy = b.y - a.y;
+      var len = Math.sqrt(dx * dx + dy * dy);
+      if (len < 0.2) continue;
+      if (Math.abs(dy) > Math.abs(dx) * 1.8) continue;     // a chasm wall: bare rock
+      var sw = len + CAP_PAD * 2;
+      if (sw > cap.w) continue;
+      var srcX = (a.wx * cap.per - CAP_PAD) % cap.w;
+      if (srcX < 0) srcX += cap.w;
+      c.save();
+      c.translate(a.x, a.y);
+      c.rotate(Math.atan2(dy, dx));
+      c.drawImage(cap.c, srcX, 0, sw, cap.h, -CAP_PAD, 0, sw, cap.h);
+      c.restore();
+    }
+  }
+
+  /* The ground is drawn for this season, then again for the next one at the
+     crossfade weight, so the soil and the grass change with the hills rather
+     than snapping over at a line. Outside a crossfade that is one pass. */
   R.drawTerrain = function () {
-    var c = R.ctx, p = R.buildSurface(), i, z = R.cam.z;
-    var cap = capFor(z);
-    if (!p.length) return;
+    var c = R.ctx, p = R.buildSurface(), i, z = R.cam.z, E = CG.Env;
+    var A = CG.themes[E.a] || CG.themes.spring, B = CG.themes[E.b] || A;
+    if (!p.length || !A) return;
+    var two = E.mix > 0 && B !== A;
 
     /* dirt body: everything under the surface */
     c.save();
@@ -1147,17 +2337,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     c.lineTo(p[0].x - 4, R.H + 10);
     c.closePath();
     c.clip();
-    if (!dirtPat) dirtPat = makeDirtPattern();
-    if (dirtPat) {
-      var ox = -(R.cam.x * z) % patTile, oy = -(R.cam.y * z) % patTile;
-      c.fillStyle = dirtPat;
-      c.translate(ox, oy);
-      c.fillRect(-ox - patTile, -oy - patTile, R.W + patTile * 2, R.H + patTile * 2);
-      c.translate(-ox, -oy);
-    } else {
-      c.fillStyle = '#8D6E63';
-      c.fillRect(0, 0, R.W, R.H);
-    }
+    fillDirt(A, E.a, 1);
+    if (two) fillDirt(B, E.b, E.mix);
+    c.globalAlpha = 1;
     /* A little screen-space depth under the cap's own shading. Cached, and
        only over the lower part of the screen where it is actually visible. */
     if (!R.cache.deep) {
@@ -1170,32 +2352,14 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     c.fillRect(0, R.H * 0.42, R.W, R.H * 0.58);
     c.restore();
 
-    /* Grass cap: a ribbon of slices, each rotated to the local slope so the
-       strip follows the ground exactly.
-
-       Each slice is a rectangle rotated about ITS OWN surface point, so where
-       the terrain curves, neighbouring slices splay apart and open a thin
-       wedge down to the full depth of the cap — which showed up as dark
-       streaks hanging into the soil. The fix is to overrun each slice by CAP_PAD
-       at both ends so neighbours always overlap by more than any wedge can
-       open. The overrun is applied to the source and destination equally, so
-       the blit stays 1:1, and the cap is opaque, so overlapping is invisible. */
-    if (!cap) return;
-    for (i = 0; i < p.length - 1; i++) {
-      var a = p[i], b = p[i + 1];
-      var dx = b.x - a.x, dy = b.y - a.y;
-      var len = Math.sqrt(dx * dx + dy * dy);
-      if (len < 0.2) continue;
-      var sw = len + CAP_PAD * 2;
-      if (sw > cap.w) continue;
-      var srcX = (a.wx * cap.per - CAP_PAD) % cap.w;
-      if (srcX < 0) srcX += cap.w;
-      c.save();
-      c.translate(a.x, a.y);
-      c.rotate(Math.atan2(dy, dx));
-      c.drawImage(cap.c, srcX, 0, sw, cap.h, -CAP_PAD, 0, sw, cap.h);
-      c.restore();
+    c.save();
+    var capA = capFor(z, E.a, A);
+    if (capA) drawCap(p, capA, 1);
+    if (two) {
+      var capB = capFor(z, E.b, B);
+      if (capB) drawCap(p, capB, E.mix);
     }
+    c.restore();
   };
 
   /* ------------------------------------------------------------------ props */
@@ -1220,15 +2384,49 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
         if (pr.x < wl - 120 || pr.x > wr + 120) continue;
         var im = CG.img[pr.kind];
         if (im) drawOnGround(im, pr.x, pr.y, pr.ang, pr.h, pr.flip);
-        if (pr.marker) {
+        if (pr.marker || pr.label) {
           var c = R.ctx;
           c.save();
           c.translate(R.sx(pr.x), R.sy(pr.y) - pr.h * R.cam.z - 10);
-          R.text(String(pr.marker * 160) + 'm', 0, 0, 20, '#FFF9C4', 'center', 4);
+          if (pr.label) R.text(pr.label, 0, 0, 15 * R.cam.z, '#FFE082', 'center', 3);
+          else if (pr.cp) R.text('CHECK ' + pr.marker, 0, 0, 20, '#AED581', 'center', 4);
+          else R.text(String(pr.marker * 160) + 'm', 0, 0, 20, '#FFF9C4', 'center', 4);
           c.restore();
         }
       }
     });
+  };
+
+  /* ----------------------------------------------------------- finish gate */
+  /* Drawn, not sprited: it has to stay crisp at any zoom and it is the single
+     most important thing on the track to be able to read from far away. */
+  R.drawFinish = function (track, time) {
+    if (!track) return;
+    var c = R.ctx, z = R.cam.z, x = track.finishX;
+    if (x < R.cam.x - (R.W / 2 + 300) / z || x > R.cam.x + (R.W / 2 + 300) / z) return;
+    var gy = CG.Terrain.ground(x), sxp = R.sx(x), syp = R.sy(gy);
+    var h = 240 * z, w = 150 * z, post = 13 * z, band = 52 * z;
+    c.save();
+    /* posts */
+    c.fillStyle = '#ECEFF1';
+    c.strokeStyle = '#2B2118'; c.lineWidth = 3 * z;
+    c.fillRect(sxp - w / 2 - post, syp - h, post, h);
+    c.strokeRect(sxp - w / 2 - post, syp - h, post, h);
+    c.fillRect(sxp + w / 2, syp - h, post, h);
+    c.strokeRect(sxp + w / 2, syp - h, post, h);
+    /* checkered banner, gently waving */
+    var cols = 8, rows = 3, cw = (w + post * 2) / cols, chh = band / rows;
+    var x0 = sxp - w / 2 - post, y0 = syp - h;
+    for (var i = 0; i < cols; i++) {
+      var wave = Math.sin(time * 2.2 + i * 0.7) * 4 * z;
+      for (var j = 0; j < rows; j++) {
+        c.fillStyle = ((i + j) & 1) ? '#2B2118' : '#F5F5F5';
+        c.fillRect(x0 + i * cw, y0 + j * chh + wave, cw + 1, chh + 1);
+      }
+    }
+    c.strokeRect(x0, y0, w + post * 2, band);
+    R.text('FINISH', sxp, y0 + band + 34 * z, 30 * z, '#FFD54F', 'center', 5 * z);
+    c.restore();
   };
 
   /* ---------------------------------------------------------------- pickups */
@@ -1279,10 +2477,309 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     return cv;
   };
 
+  /* ------------------------------------------------------- coordinate grid
+     The lesson, drawn into the world. Grid lines are one CG.UNIT apart in
+     world space, the axes run through the gap's own origin, and the whole
+     thing sits BEHIND the terrain so the cliffs cut it off exactly where a
+     real plotted picture would — the points on the lips then sit on the grid
+     the way they do in the textbook. Faded in and out by `alpha`. */
+  var MINUS = '\u2212';
+  R.coord = function (n) { return (n < 0 ? MINUS : '') + Math.abs(n); };
+  R.pair = function (p) { return '(' + R.coord(p[0]) + ', ' + R.coord(p[1]) + ')'; };
+
+  var X_COL = '#F59E0B', Y_COL = '#1E5BD6', KEY = 'rgba(255,255,255,0.95)', NAVY = '#1A3C8C';
+
+  /* text with a light halo: dark numbers that stay legible over the pane */
+  function haloText(str, x, y, size, fill, align) {
+    var c = R.ctx;
+    c.font = '800 ' + size + 'px "Nunito", "Trebuchet MS", system-ui, sans-serif';
+    c.textAlign = align || 'center'; c.textBaseline = 'middle';
+    c.lineJoin = 'round'; c.lineWidth = size * 0.28; c.strokeStyle = KEY;
+    c.strokeText(str, x, y);
+    c.fillStyle = fill; c.fillText(str, x, y);
+  }
+  R.haloText = haloText;
+
+  /* The grid pane on screen, so the title can sit over it. */
+  R.gridBox = function (gap) {
+    var U = CG.UNIT, z = R.cam.z;
+    var minGX = Math.min(gap.a[0], gap.b[0]) - 2, maxGX = Math.max(gap.a[0], gap.b[0]) + 2;
+    var minGY = Math.min(gap.a[1], gap.b[1]) - 4, maxGY = Math.max(gap.a[1], gap.b[1]) + 6;
+    return { minGX: minGX, maxGX: maxGX, minGY: minGY, maxGY: maxGY,
+             left: R.sx(gap.ox + minGX * U) - 0.5 * U * z, right: R.sx(gap.ox + maxGX * U) + 0.5 * U * z,
+             top: Math.max(104, R.sy(gap.oy - maxGY * U) - 0.5 * U * z),
+             bottom: R.sy(gap.oy - minGY * U) + 0.5 * U * z };
+  };
+
+  R.drawGrid = function (gap, alpha) {
+    if (!gap || alpha <= 0.01) return;
+    var c = R.ctx, z = R.cam.z, U = CG.UNIT, b = R.gridBox(gap);
+    var left = b.left, right = b.right, top = b.top, bottom = b.bottom, i, x, y;
+    c.save();
+    c.globalAlpha = alpha;
+    /* the frosted pane */
+    R.roundRect(left, top, right - left, bottom - top, 18 * z);
+    c.fillStyle = 'rgba(190,222,250,0.46)'; c.fill();
+    c.lineWidth = 2.5; c.strokeStyle = 'rgba(255,255,255,0.75)'; c.stroke();
+    c.save();
+    R.roundRect(left, top, right - left, bottom - top, 18 * z); c.clip();
+    c.lineWidth = 1.5;
+    c.strokeStyle = 'rgba(255,255,255,0.72)';
+    c.beginPath();
+    for (i = b.minGX; i <= b.maxGX; i++) {
+      x = Math.round(R.sx(gap.ox + i * U)) + 0.5;
+      c.moveTo(x, top); c.lineTo(x, bottom);
+    }
+    for (i = b.minGY; i <= b.maxGY; i++) {
+      y = Math.round(R.sy(gap.oy - i * U)) + 0.5;
+      c.moveTo(left, y); c.lineTo(right, y);
+    }
+    c.stroke();
+    c.restore();
+    /* THE NUMBER LINE: a thick orange x-axis and blue y-axis, arrowheads at
+       both ends just past the pane, a tick every unit, a number every two */
+    var ax = R.sx(gap.ox), ay = R.sy(gap.oy), arrow = 16 * z, tick = 7 * z, big = 11 * z;
+    var fs = Math.max(13, 17 * z), over = 0.6 * U * z;
+    var every = 2;
+    function axisLine(x0, y0, x1, y1, col) {
+      c.lineCap = 'round';
+      c.lineWidth = 9; c.strokeStyle = KEY;
+      c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.stroke();
+      c.lineWidth = 5.5; c.strokeStyle = col;
+      c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.stroke();
+    }
+    function arrowHead(x0, y0, dx, dy, col) {
+      c.beginPath();
+      c.moveTo(x0 + dx * arrow, y0 + dy * arrow);
+      c.lineTo(x0 - dy * arrow * 0.6, y0 + dx * arrow * 0.6);
+      c.lineTo(x0 + dy * arrow * 0.6, y0 - dx * arrow * 0.6);
+      c.closePath();
+      c.fillStyle = col; c.fill();
+      c.lineWidth = 2.5; c.strokeStyle = KEY; c.lineJoin = 'round'; c.stroke();
+    }
+    var xL = left - over, xR = right + over;
+    var yT = Math.max(top - over, 112), yB = bottom + over;
+    var showY = ay > yT + 40;
+    axisLine(xL, ay, xR, ay, X_COL);
+    arrowHead(xR, ay, 1, 0, X_COL); arrowHead(xL, ay, -1, 0, X_COL);
+    if (showY) {
+      axisLine(ax, yB, ax, yT, Y_COL);
+      arrowHead(ax, yT, 0, -1, Y_COL); arrowHead(ax, yB, 0, 1, Y_COL);
+    }
+    c.lineCap = 'butt';
+    c.strokeStyle = X_COL; c.lineWidth = 3;
+    c.beginPath();
+    for (i = b.minGX; i <= b.maxGX; i++) {
+      if (i === 0) continue;
+      x = R.sx(gap.ox + i * U); var t = i % every ? tick : big;
+      c.moveTo(x, ay - t); c.lineTo(x, ay + t);
+    }
+    c.stroke();
+    if (showY) {
+      c.strokeStyle = Y_COL;
+      c.beginPath();
+      for (i = b.minGY; i <= b.maxGY; i++) {
+        if (i === 0) continue;
+        y = R.sy(gap.oy - i * U); if (y < yT + 8) continue;
+        var t2 = i % every ? tick : big;
+        c.moveTo(ax - t2, y); c.lineTo(ax + t2, y);
+      }
+      c.stroke();
+    }
+    for (i = b.minGX; i <= b.maxGX; i++) {
+      if (i === 0 || i % every) continue;
+      haloText(R.coord(i), R.sx(gap.ox + i * U), ay + big + fs * 0.85, fs, NAVY, 'center');
+    }
+    if (showY) for (i = b.minGY; i <= b.maxGY; i++) {
+      if (i === 0 || i % every) continue;
+      y = R.sy(gap.oy - i * U); if (y < yT + 8) continue;
+      haloText(R.coord(i), ax - big - fs * 0.5, y, fs, NAVY, 'right');
+    }
+    /* axis letters in little white badges */
+    function badge(txt, x, y, col) {
+      var w = fs * 1.8, h = fs * 1.7;
+      R.roundRect(x - w / 2, y - h / 2, w, h, 7);
+      c.fillStyle = 'rgba(255,255,255,0.95)'; c.fill();
+      c.lineWidth = 1.5; c.strokeStyle = 'rgba(255,255,255,1)'; c.stroke();
+      R.text(txt, x, y + 1, fs * 1.35, col, 'center', 0);
+    }
+    badge('x', xR + arrow + fs * 0.6, ay - fs * 1.5, X_COL);
+    if (showY) badge('y', ax + fs * 1.6, yT + fs * 0.3, Y_COL);
+    c.restore();
+  };
+
+  /* The pit of every chasm in view, darkening towards its floor. The
+     background layers stop well above a pit this deep and would otherwise
+     show through as a flat wall of colour; the shadow is what makes the hole
+     read as a hole. Drawn before the terrain, so the walls sit over it. */
+  R.drawChasmDepth = function (track) {
+    if (!track || !track.chasms.length) return;
+    var c = R.ctx, z = R.cam.z, i, g;
+    var wl = R.cam.x - (R.W / 2 + 100) / z, wr = R.cam.x + (R.W / 2 + 100) / z;
+    for (i = 0; i < track.chasms.length; i++) {
+      g = track.chasms[i];
+      if (g.bx < wl || g.ax > wr) continue;
+      var x0 = R.sx(g.ax) - 2, x1 = R.sx(g.bx) + 2;
+      var lip = Math.min(g.ay, g.by), top = R.sy(lip), bot = R.sy(lip + 1000);
+      /* the valley far below: the parallax art ends a few hundred px down, so
+         beneath it a river-blue floor fades up into the haze */
+      var vt = R.sy(lip + 260), vb = R.sy(lip + 1000);
+      var valley = c.createLinearGradient(0, vt, 0, vb);
+      valley.addColorStop(0, 'rgba(70,140,190,0)');
+      valley.addColorStop(0.35, 'rgba(70,140,190,0.85)');
+      valley.addColorStop(0.7, 'rgba(40,95,140,1)');
+      valley.addColorStop(1, 'rgba(18,40,65,1)');
+      c.fillStyle = valley;
+      c.fillRect(x0, vt, x1 - x0, Math.max(0, Math.min(R.H + 40, vb) - vt));
+      var grad = c.createLinearGradient(0, top, 0, bot);
+      grad.addColorStop(0, 'rgba(150,190,225,0.0)');
+      grad.addColorStop(0.25, 'rgba(120,165,205,0.22)');       // distance haze
+      grad.addColorStop(0.6, 'rgba(40,70,105,0.62)');
+      grad.addColorStop(1, 'rgba(12,20,34,0.96)');
+      c.fillStyle = grad;
+      c.fillRect(x0, top, x1 - x0, Math.max(0, Math.min(R.H + 40, bot) - top));
+    }
+  };
+
+  /* Rock faces on the two walls, over the dirt: a cliff is cut stone, not a
+     slice through a flowerbed. Lit on the pit side, cracked at intervals. */
+  R.drawChasmWalls = function (track) {
+    if (!track || !track.chasms.length) return;
+    var c = R.ctx, z = R.cam.z, i, g, k;
+    var wl = R.cam.x - (R.W / 2 + 100) / z, wr = R.cam.x + (R.W / 2 + 100) / z;
+    var W = 44 * z;
+    function face(sx, lipY, side) {         // side +1: face looks to +x (near wall)
+      var top = R.sy(lipY) + 2, bot = R.H + 10, x0 = side > 0 ? sx - W : sx;
+      if (top > bot) return;
+      var grad = c.createLinearGradient(x0, 0, x0 + W, 0);
+      if (side > 0) { grad.addColorStop(0, '#8D6743'); grad.addColorStop(0.75, '#B08856'); grad.addColorStop(1, '#D4AA6E'); }
+      else { grad.addColorStop(0, '#D4AA6E'); grad.addColorStop(0.25, '#B08856'); grad.addColorStop(1, '#8D6743'); }
+      c.fillStyle = grad;
+      c.fillRect(x0, top, W, bot - top);
+      /* strata and cracks, seeded by the wall's world x so they do not crawl */
+      var rnd = CG.rng(Math.floor(sx / z + R.cam.x) | 0), y = top + 10 * z, n = 0;
+      c.strokeStyle = 'rgba(70,40,20,0.45)'; c.lineWidth = 2 * z;
+      c.beginPath();
+      while (y < bot && n++ < 60) {
+        var len = W * (0.4 + rnd() * 0.6), xs = side > 0 ? x0 + W - len : x0;
+        c.moveTo(xs, y); c.lineTo(xs + len, y + (rnd() - 0.5) * 8 * z);
+        y += (26 + rnd() * 48) * z;
+      }
+      c.stroke();
+      /* depth shade down the face */
+      var g2 = c.createLinearGradient(0, top, 0, top + 900 * z);
+      g2.addColorStop(0, 'rgba(0,0,0,0)'); g2.addColorStop(1, 'rgba(10,15,25,0.85)');
+      c.fillStyle = g2; c.fillRect(x0, top, W, bot - top);
+      /* the lip's own edge */
+      c.fillStyle = 'rgba(255,240,200,0.35)';
+      c.fillRect(side > 0 ? sx - 3 * z : sx, top - 2, 3 * z, Math.min(bot - top, 900 * z));
+    }
+    for (i = 0; i < track.chasms.length; i++) {
+      g = track.chasms[i];
+      if (g.bx < wl || g.ax > wr) continue;
+      face(R.sx(g.ax), g.ay, 1);
+      face(R.sx(g.bx), g.by, -1);
+    }
+  };
+
+  /* The two plotted points, their labels and (when `legs`) the right
+     triangle under the hypotenuse with its legs measured — the hint. Drawn in
+     front of the terrain: these must never be hidden. */
+  R.drawGapPoints = function (gap, alpha, legs) {
+    if (!gap || alpha <= 0.01) return;
+    var c = R.ctx, z = R.cam.z, U = CG.UNIT;
+    var ax = R.sx(gap.ax), ay = R.sy(gap.ay), bx = R.sx(gap.bx), by = R.sy(gap.by);
+    c.save();
+    c.globalAlpha = alpha;
+    if (legs) {
+      var q = gap.q, cx = bx, cy = ay;              // the corner under B, level with A
+      c.setLineDash([6 * z, 5 * z]);
+      c.lineWidth = 2.5;
+      c.strokeStyle = '#FFF176';
+      c.beginPath(); c.moveTo(ax, ay); c.lineTo(cx, cy); c.lineTo(bx, by); c.stroke();
+      c.strokeStyle = '#FF8A65';
+      c.beginPath(); c.moveTo(ax, ay); c.lineTo(bx, by); c.stroke();
+      c.setLineDash([]);
+      R.text(String(q.dx), (ax + cx) / 2, cy + 18 * z, 17 * z, '#FFF176', 'center', 4);
+      if (q.dy) R.text(String(q.dy), cx + 16 * z, (cy + by) / 2, 17 * z, '#FFF176', 'left', 4);
+    }
+    var r = 9 * z;
+    [[ax, ay, gap.a, 'right'], [bx, by, gap.b, 'left']].forEach(function (p) {
+      c.beginPath(); c.arc(p[0], p[1], r + 4, 0, CG.TAU);
+      c.fillStyle = 'rgba(255,255,255,0.35)'; c.fill();
+      c.beginPath(); c.arc(p[0], p[1], r, 0, CG.TAU);
+      c.fillStyle = '#9C27B0'; c.fill();
+      c.lineWidth = 2.5; c.strokeStyle = '#FFF'; c.stroke();
+      var txt = R.pair(p[2]), fs = Math.max(15, 22 * z);
+      c.font = '800 ' + fs + 'px "Nunito", "Trebuchet MS", system-ui, sans-serif';
+      var tw = c.measureText(txt).width + fs * 1.0, th = fs * 1.5;
+      var lx = p[0], ly = p[1] - r - 8 * z - th / 2;
+      R.roundRect(lx - tw / 2, ly - th / 2, tw, th, th / 2);
+      c.fillStyle = 'rgba(255,255,255,0.96)'; c.fill();
+      c.lineWidth = 3; c.strokeStyle = '#8E24AA'; c.stroke();
+      R.text(txt, lx, ly + 1, fs, '#5E1B8A', 'center', 0);
+    });
+    c.restore();
+  };
+
+  /* A plank. `pose` is the midpoint of its TOP edge, its angle, its length in
+     world px, and a scale/alpha for the spawn pop. The body hangs below the
+     top edge, so a placed plank's top is exactly the driving surface. */
+  var PLANK_T = 16;
+  R.PLANK_T = PLANK_T;
+  R.drawPlank = function (pose, label) {
+    var c = R.ctx, z = R.cam.z, L = pose.len, T = PLANK_T;
+    if (L < 2) return;
+    c.save();
+    c.translate(R.sx(pose.x), R.sy(pose.y));
+    c.rotate(pose.ang);
+    var sc = (pose.scale === undefined ? 1 : pose.scale) * z;
+    c.scale(sc, sc);
+    c.globalAlpha = pose.alpha === undefined ? 1 : pose.alpha;
+    /* shadow / underside */
+    c.fillStyle = 'rgba(43,33,24,0.35)';
+    R.roundRect(-L / 2 + 3, 4, L, T + 2, 4); c.fill();
+    /* body */
+    var g = c.createLinearGradient(0, 0, 0, T);
+    g.addColorStop(0, '#D9A05B'); g.addColorStop(0.5, '#B87A3A'); g.addColorStop(1, '#8A5424');
+    c.fillStyle = g;
+    R.roundRect(-L / 2, 0, L, T, 3); c.fill();
+    c.lineWidth = 2; c.strokeStyle = '#5B3616'; c.stroke();
+    /* grain */
+    c.strokeStyle = 'rgba(90,50,20,0.35)'; c.lineWidth = 1;
+    c.beginPath();
+    for (var i = 1; i < 3; i++) { c.moveTo(-L / 2 + 6, T * i / 3 + 1); c.lineTo(L / 2 - 6, T * i / 3 - 1); }
+    c.stroke();
+    /* bracing straps every ~unit so the length can be counted by eye */
+    c.fillStyle = 'rgba(70,40,15,0.45)';
+    var n = Math.max(1, Math.round(L / CG.UNIT));
+    for (var k = 1; k < n; k++) c.fillRect(-L / 2 + k * (L / n) - 1.5, 0, 3, T);
+    /* top highlight */
+    c.fillStyle = 'rgba(255,240,200,0.35)';
+    c.fillRect(-L / 2 + 2, 1, L - 4, 2);
+    if (label) {
+      c.rotate(-pose.ang);
+      R.text(label, 0, -20, 19, '#FFE082', 'center', 4);
+    }
+    c.restore();
+  };
+
+  /* Planks already fixed into the world (see Terrain.planks). */
+  R.drawPlanks = function (skip) {
+    var ps = CG.Terrain.planks, i, p;
+    var wl = R.cam.x - (R.W / 2 + 400) / R.cam.z, wr = R.cam.x + (R.W / 2 + 400) / R.cam.z;
+    for (i = 0; i < ps.length; i++) {
+      p = ps[i];
+      if (p === skip || p.x1 < wl || p.x0 > wr) continue;
+      R.drawPlank({ x: (p.x0 + p.x1) / 2, y: (p.y0 + p.y1) / 2,
+                    ang: Math.atan2(p.y1 - p.y0, p.x1 - p.x0), len: Math.hypot(p.x1 - p.x0, p.y1 - p.y0) });
+    }
+  };
+
   /* ---------------------------------------------------------------- vehicle */
   R.drawVehicle = function (v, dt) {
     var c = R.ctx, z = R.cam.z, ART = V.ART, i, w;
-    var jeep = CG.img.jeep, wheel = CG.img.wheel;
+    var car = CG.img.car, wheel = CG.img.wheel;
     c.save();
     c.translate(R.sx(v.x), R.sy(v.y));
     c.rotate(v.a);
@@ -1300,27 +2797,35 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
         c.restore();
       }
     }
-    if (jeep) {
-      c.drawImage(jeep, V.bodyOrigin.x, V.bodyOrigin.y,
-                  jeep.width * ART, jeep.height * ART);
+    if (car) {
+      c.drawImage(car, V.bodyOrigin.x, V.bodyOrigin.y,
+                  car.width * ART, car.height * ART);
     }
+    /* no driver: the cabin is tinted glass, and the car is the character */
 
-    /* driver: hip pinned to the seat, head pivoting on the neck joint */
-    var ds = 0.62 * ART;
-    var body = CG.img.driverBody, head = CG.img.driverHead;
-    var HIP = [55, 170], COLLAR = [76, 13];
-    if (body) {
-      c.drawImage(body, V.seat.x - HIP[0] * ds, V.seat.y - HIP[1] * ds,
-                  body.width * ds, body.height * ds);
-    }
-    if (head) {
-      var cx = V.seat.x + (COLLAR[0] - HIP[0]) * ds;
-      var cy = V.seat.y + (COLLAR[1] - HIP[1]) * ds;
+    /* headlamps: a cone of light ahead of the lamp cluster once it gets dark,
+       additive so it lifts whatever it falls on rather than painting over it */
+    var night = CG.Env.night;
+    if (night > 0.04) {
+      var lx = V.lamp.x, ly = V.lamp.y, len = 300, spread = 58;
       c.save();
-      c.translate(cx, cy);
-      c.rotate(v.headLean || 0);
-      c.drawImage(head, -head.width * ds / 2, -head.height * ds / 2,
-                  head.width * ds, head.height * ds);
+      c.globalCompositeOperation = 'lighter';
+      var g = c.createLinearGradient(lx, ly, lx + len, ly);
+      g.addColorStop(0, 'rgba(255,238,170,' + (0.34 * night).toFixed(3) + ')');
+      g.addColorStop(1, 'rgba(255,238,170,0)');
+      c.fillStyle = g;
+      c.beginPath();
+      c.moveTo(lx, ly - 6);
+      c.lineTo(lx + len, ly - spread);
+      c.lineTo(lx + len, ly + spread * 0.7);
+      c.lineTo(lx, ly + 8);
+      c.closePath();
+      c.fill();
+      var gl = c.createRadialGradient(lx, ly, 2, lx, ly, 26);
+      gl.addColorStop(0, 'rgba(255,246,200,' + (0.9 * night).toFixed(3) + ')');
+      gl.addColorStop(1, 'rgba(255,246,200,0)');
+      c.fillStyle = gl;
+      c.fillRect(lx - 26, ly - 26, 52, 52);
       c.restore();
     }
     c.restore();
@@ -1376,7 +2881,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 
   R.roundRect = function (x, y, w, h, r) {
     var c = R.ctx;
-    r = Math.min(r, w / 2, h / 2);
+    if (w < 0) { x += w; w = -w; }            // a squeezed layout must never throw mid-frame
+    if (h < 0) { y += h; h = -h; }
+    r = Math.max(0, Math.min(r, w / 2, h / 2));
     c.beginPath();
     c.moveTo(x + r, y);
     c.arcTo(x + w, y, x + w, y + h, r);
@@ -1397,6 +2904,93 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   };
 })(CG);
 
+/* ================================== STAGES ==================================
+   The objective. A run is one stage: reach the flag before the fuel or the
+   lives run out. Three stars per stage — finishing is one, the par time is the
+   second, the coin goal is the third — so a stage stays worth replaying after
+   it is beaten.
+
+   `plan` is the pathway: the ordered list of parts from the PATHWAY module.
+   'CP' marks the next part as a checkpoint (it should be a `shelf` — level
+   ground to respawn onto); 'FINISH' puts the line at the start of the part
+   after it, which is always the long level `finish` run-out.
+
+   `par` and `coins` are not guesses: tools/stage_test.js drives every stage
+   headlessly with a bot and prints the achieved time and the coins on the
+   track. Re-run it after changing a plan.                                    */
+(function (CG) {
+  'use strict';
+
+  /* A chasm entry is `{ c: [x1, y1, x2, y2] }` — the two lips, plotted. The
+     answer is read off a ruler, so every distance is a whole number: a
+     horizontal gap, or a Pythagorean triple (3-4-5, 6-8-10, 5-12-13) laid on
+     its side. The plank's slope is the one physical constraint: the car
+     climbs a sustained 30 deg at most, so the only UPHILL triple is 5-12-13
+     (23 deg); 3-4-5 and 6-8-10 always run downhill. The curriculum goes
+     horizontal, then downhill triples, then the long climb, then everything
+     in every quadrant. */
+  CG.Stages = [
+    { id: 1, name: 'MEADOW START', sub: 'distance along a line', seed: 1101, d: 0.12,
+      par: 25, coins: 235, fuel: 100,
+      plan: ['start', { c: [-2, -2, 3, -2] }, 'rollers', { c: [-4, -2, 2, -2] },
+             'CP', 'shelf', 'washboard', { c: [1, -1, 5, -1] }, 'rollers',
+             'FINISH', 'finish'] },
+
+    { id: 2, name: 'BLOSSOM TRAIL', sub: 'down the slope: 3-4-5', seed: 2214, d: 0.25,
+      par: 30, coins: 235, fuel: 100,
+      plan: ['start', { c: [-3, -1, 4, -1] }, 'rollers', { c: [-2, -1, 2, -4] },
+             'CP', 'shelf', 'crest', { c: [-1, -1, 5, -1] }, 'washboard', { c: [-1, -1, 3, -4] },
+             'FINISH', 'finish'] },
+
+    { id: 3, name: 'ORCHARD CLIMB', sub: 'the long climb: 5-12-13', seed: 3307, d: 0.38,
+      par: 35, coins: 220, fuel: 100,
+      plan: ['start', { c: [-2, -1, 2, -4] }, 'rollers', 'climb', { c: [-6, -2, 6, 3] },
+             'CP', 'shelf', 'washboard', { c: [-4, 1, 4, -5] }, 'rollers',
+             'CP', 'shelf', { c: [0, -2, 5, -2] }, 'crest', 'FINISH', 'finish'] },
+
+    { id: 4, name: 'SUNSET RIDGE', sub: 'steeper drops', seed: 4419, d: 0.50,
+      par: 35, coins: 265, fuel: 90,
+      plan: ['start', { c: [-3, -1, 5, -1] }, 'rollers', { c: [-2, -1, 1, -5] },
+             'CP', 'shelf', 'crest', { c: [-6, 1, 6, -4] }, 'washboard', { c: [-5, -1, 3, -7] },
+             'CP', 'shelf', 'rollers', 'FINISH', 'finish'] },
+
+    { id: 5, name: 'WIND GAP', sub: 'triples both ways', seed: 5523, d: 0.62,
+      par: 40, coins: 225, fuel: 90,
+      plan: ['start', { c: [-4, -3, 8, 2] }, 'rollers', 'descent', { c: [-3, -3, 3, -3] },
+             'CP', 'shelf', 'climb', { c: [-7, -1, 5, -6] }, 'washboard', { c: [-2, -1, 2, -4] },
+             'CP', 'shelf', 'rollers', 'crest', 'FINISH', 'finish'] },
+
+    { id: 6, name: 'THUNDER STEPS', sub: 'every quadrant', seed: 6631, d: 0.72,
+      par: 45, coins: 330, fuel: 85,
+      plan: ['start', { c: [-5, -2, 4, -2] }, 'rollers', { c: [-6, -1, 2, -7] },
+             'CP', 'shelf', 'crest', 'descent', { c: [-1, -4, 11, 1] }, 'washboard',
+             'CP', 'shelf', { c: [-3, -1, 1, -4] }, 'rollers', { c: [-4, -3, 7, -3] },
+             'FINISH', 'finish'] },
+
+    { id: 7, name: 'HIGH MEADOW', sub: 'no room for error', seed: 7741, d: 0.85,
+      par: 45, coins: 440, fuel: 85,
+      plan: ['start', { c: [-4, -3, 8, 2] }, 'climb', { c: [-8, -1, 0, -7] },
+             'CP', 'shelf', 'rollers', { c: [-6, -2, 6, -2] }, 'crest', { c: [-2, -5, 2, -8] },
+             'CP', 'shelf', 'washboard', { c: [-3, -1, 9, -6] }, 'descent',
+             'FINISH', 'finish'] },
+
+    { id: 8, name: 'GOLDEN SUMMIT', sub: 'everything you have', seed: 8853, d: 1.0,
+      par: 60, coins: 430, fuel: 80,
+      plan: ['start', { c: [-5, -1, 7, 4] }, 'rollers', 'climb', { c: [-9, -1, 3, -6] },
+             'CP', 'shelf', 'crest', { c: [-7, -1, 1, -7] }, 'washboard', { c: [-2, -6, 6, -6] },
+             'CP', 'shelf', 'descent', { c: [-8, -4, 4, 1] }, 'rollers', { c: [-4, -1, 0, -4] },
+             'CP', 'shelf', 'rollers', 'FINISH', 'finish'] }
+  ];
+
+  /* Endless is the old game, kept as the reward for clearing the pathway. */
+  CG.ENDLESS_AFTER = 5;
+
+  CG.buildStage = function (i) {
+    var st = CG.Stages[i];
+    return CG.Track.build(st.plan, st.seed, st.d);
+  };
+})(CG);
+
 /* ==================================== GAME ================================= */
 (function (CG) {
   'use strict';
@@ -1405,18 +2999,27 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
                                      // 90Hz+ converges (tools/sim_test.js)
 
   var G = CG.Game = {
-    state: 'title',
+    state: 'title',          // title | select | play | paused | win | over
+    mode: 'stage',           // stage | endless
     v: null,
+    stageIdx: 0, stage: null, track: null,
     time: 0, dist: 0, coins: 0, fuel: 100, safety: 0,
+    lives: 3, cpIdx: -1, cpX: 0, progress: 0,
+    stars: 0, wonStars: 0, winT: 0,
     best: 0, bank: 0,
     boostT: 0, deadT: 0, invuln: 0,
     reason: '', newBest: false, runCoins: 0,
+    gap: null,               // the chasm sequence in progress (see CHASMS below)
+    gapCount: 0, firstTry: 0,
+    prog: {},                // stage id -> { s: stars, t: best time, c: best coins }
     input: { gas: 0, brake: 0, boost: false },
     muted: false,
     seed: 1
   };
 
   var FUEL_MAX = 100, FUEL_DRIVE = 3.4, FUEL_IDLE = 1.0, FUEL_CAN = 34;
+  var CP_FUEL = 30;                  // a checkpoint tops the tank up by this
+  var LIVES = 3;
   var buttons = [], pointers = {}, keys = {};
   var acc = 0, dustT = 0, smokeT = 0, lastSafeX = 0, lastSafeT = 0;
 
@@ -1426,40 +3029,100 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       G.best = +(localStorage.getItem('cg_best') || 0) || 0;
       G.bank = +(localStorage.getItem('cg_coins') || 0) || 0;
       G.muted = localStorage.getItem('cg_muted') === '1';
-    } catch (e) { /* file:// or private mode — run without persistence */ }
+      G.prog = JSON.parse(localStorage.getItem('cg_prog') || '{}') || {};
+    } catch (e) { G.prog = {}; /* file:// or private mode — run without persistence */ }
   }
   function save() {
     try {
       localStorage.setItem('cg_best', String(Math.round(G.best)));
       localStorage.setItem('cg_coins', String(Math.round(G.bank)));
       localStorage.setItem('cg_muted', G.muted ? '1' : '0');
+      localStorage.setItem('cg_prog', JSON.stringify(G.prog));
     } catch (e) {}
   }
 
+  /* ------------------------------------------------------------ progress */
+  G.record = function (id) { return G.prog[id] || null; };
+  G.starsOf = function (id) { var r = G.prog[id]; return r ? r.s : 0; };
+  G.totalStars = function () {
+    var n = 0;
+    for (var i = 0; i < CG.Stages.length; i++) n += G.starsOf(CG.Stages[i].id);
+    return n;
+  };
+  /* A stage opens when the one before it has been finished at least once. */
+  G.unlocked = function (i) {
+    return i === 0 || G.starsOf(CG.Stages[i - 1].id) > 0;
+  };
+  G.endlessOpen = function () {
+    return G.starsOf(CG.Stages[Math.min(CG.ENDLESS_AFTER, CG.Stages.length) - 1].id) > 0;
+  };
+
   /* ---------------------------------------------------------------- run */
-  G.newRun = function () {
-    G.seed = (Math.random() * 1e9) | 0 || 1;
-    CG.Terrain.setSeed(G.seed);
-    CG.World.init(G.seed);
+  function beginRun(x) {
     FX.reset();
+    CG.Terrain.setPlanks([]);
+    G.gap = null; G.firstTry = 0;
+    G.gapCount = G.track ? G.track.chasms.length : 0;
     G.v = new CG.Vehicle(CG.Terrain);
-    G.v.reset(160);
+    G.v.reset(x);
     G.v.headLean = 0;
     G.time = 0; G.dist = 0; G.coins = 0; G.runCoins = 0;
-    G.fuel = FUEL_MAX; G.safety = 0;
-    G.boostT = 0; G.deadT = 0; G.invuln = 0;
-    G.reason = ''; G.newBest = false;
+    G.safety = 0; G.boostT = 0; G.deadT = 0; G.invuln = 0;
+    G.reason = ''; G.newBest = false; G.stars = 0; G.wonStars = 0; G.winT = 0;
+    G.progress = 0;
+    CG.Env.reset(G.seed);
     lastSafeX = G.v.x; lastSafeT = 0;
     R.cam.x = G.v.x; R.cam.y = G.v.y; R.cam.z = 1;
     R.shake = 0;
     G.state = 'play';
+  }
+
+  /* One stage = one authored pathway, a fuel budget and three lives. */
+  G.startStage = function (i) {
+    i = CG.clamp(i | 0, 0, CG.Stages.length - 1);
+    var st = CG.Stages[i];
+    G.mode = 'stage'; G.stageIdx = i; G.stage = st; G.seed = st.seed;
+    CG.Terrain.setSeed(st.seed);
+    G.track = CG.buildStage(i);
+    CG.Terrain.setTrack(G.track);
+    CG.World.init(st.seed, G.track);
+    G.fuel = st.fuel; G.lives = LIVES; G.cpIdx = -1; G.cpX = 0;
+    beginRun(160);
+    A.music(true);
   };
 
-  G.toTitle = function () {
-    G.seed = 12345;
+  G.startEndless = function () {
+    G.mode = 'endless'; G.stage = null; G.track = null;
+    G.seed = (Math.random() * 1e9) | 0 || 1;
     CG.Terrain.setSeed(G.seed);
-    CG.World.init(G.seed);
+    CG.Terrain.setTrack(null);
+    CG.World.init(G.seed, null);
+    G.fuel = FUEL_MAX; G.lives = 1; G.cpIdx = -1; G.cpX = 0;
+    beginRun(160);
+  };
+
+  /* Retry whatever is loaded, so the pause and fail screens need no branching. */
+  G.restart = function () {
+    if (G.mode === 'endless') G.startEndless(); else G.startStage(G.stageIdx);
+  };
+
+  /* The game is one endless run now. The stage table, its pathways and the
+     chasm questions are still in the file (tools/stage_test.js drives them,
+     and ?stage=N still loads one), but nothing in the player's flow reaches
+     them: PLAY starts an endless run, and the title idles on the same kind of
+     rolling country the player is about to drive, on a fixed seed so it is the
+     same hillside every launch. */
+  G.toTitle = function () {
+    G.mode = 'endless'; G.stage = null; G.stageIdx = 0;
+    G.seed = 7;
+    CG.Terrain.setSeed(G.seed);
+    G.track = null;
+    CG.Terrain.setTrack(null);
+    CG.World.init(G.seed, null);
+    CG.Env.reset(G.seed);
     FX.reset();
+    CG.Terrain.setPlanks([]);
+    G.gap = null;
     G.v = new CG.Vehicle(CG.Terrain);
     G.v.reset(300);
     G.v.headLean = 0;
@@ -1468,30 +3131,79 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     G.state = 'title';
   };
 
+  G.toSelect = function () {
+    if (G.state === 'play' || G.state === 'paused') A.drive(0, 0, 0, false);
+    G.state = 'select';
+  };
+
+  /* -------------------------------------------------------- stage outcome */
+  function starsFor(st) {
+    var n = 1;                                   // finishing is always one star
+    if (G.time <= st.par) n++;
+    if (G.coins >= st.coins) n++;
+    return n;
+  }
+
+  function finishStage() {
+    if (G.state !== 'play') return;
+    G.state = 'win';
+    G.winT = 0; G.starsPopped = 0;
+    G.stars = starsFor(G.stage);
+    G.bank += G.coins;
+    var id = G.stage.id, r = G.prog[id];
+    G.newBest = !r || G.time < r.t;
+    G.prog[id] = {
+      s: Math.max(r ? r.s : 0, G.stars),
+      t: r ? Math.min(r.t, G.time) : G.time,
+      c: Math.max(r ? r.c : 0, G.coins)
+    };
+    save();
+    A.sfx('win');
+    A.drive(0, 0, 0, false);
+  }
+
   function gameOver(why) {
     if (G.state !== 'play') return;
     G.state = 'over';
     G.reason = why;
     G.bank += G.coins;
-    if (G.dist > G.best) { G.best = G.dist; G.newBest = true; }
+    if (G.mode === 'endless' && G.dist > G.best) { G.best = G.dist; G.newBest = true; }
     save();
     A.sfx(why === 'fuel' ? 'over' : 'crash');
     A.drive(0, 0, 0, false);
     R.shake = why === 'fuel' ? 0 : 16;
   }
 
-  /* Respawn instead of dying, if a heart was collected. */
-  function useSafety() {
-    G.safety--;
-    var x = Math.max(120, lastSafeX - 70);
-    G.v.reset(x);
+  /* Put the car back on its wheels at `x` and give it a moment of immunity. */
+  function respawnAt(x, fuel) {
+    G.gap = null;                      // a chasm re-arms itself on the next approach
+    G.v.reset(Math.max(120, x));
     G.v.crashed = false; G.v.crashReason = ''; G.v.upsideTime = 0;
     G.v.headLean = 0;
     G.invuln = 1.4;
-    G.fuel = Math.max(G.fuel, 22);
+    G.fuel = Math.max(G.fuel, fuel);
+    lastSafeX = G.v.x; lastSafeT = 0;
+    R.shake = 10;
+    updateCamera(0, true);
+  }
+
+  /* Respawn instead of dying, if a heart was collected. */
+  function useSafety() {
+    G.safety--;
+    respawnAt(lastSafeX - 70, 22);
     FX.text(G.v.x, G.v.y - 90, 'SAVED!', '#EF5350', true);
     A.sfx('gem');
-    R.shake = 10;
+  }
+
+  /* A crash in a stage costs a life and sends you back to the last checkpoint;
+     out of lives ends the run. Endless has one life, as it always did. */
+  function crashOut(why) {
+    if (G.mode !== 'stage' || G.lives <= 1) { gameOver(why); return; }
+    G.lives--;
+    A.sfx('crash');
+    R.shake = 14;
+    respawnAt(G.cpIdx >= 0 ? G.cpX : 160, 30);
+    FX.text(G.v.x, G.v.y - 96, G.lives + ' LEFT', '#EF5350', true);
   }
 
   /* ------------------------------------------------------------ pickups */
@@ -1546,11 +3258,229 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   }
 
   /* -------------------------------------------------------------- update */
-  function stepPhysics(dt, live) {
+  var COAST = { gas: 0, brake: 0, boost: false };
+  var SLOWDOWN = { gas: 0, brake: 0.55, boost: false };
+  var CREEP = { gas: 0.4, brake: 0, boost: false };
+
+  /* ------------------------------------------------------------- CHASMS
+     The sequence at a gap, as phases of G.gap:
+       approach  the car is eased to a halt on the near lip; the grid fades in
+       ask       the clock stops; the question is up; the car is held
+       spawn     the chosen plank pops into being above the car
+       place     it rotates level and slides down into the gap
+       drive     the accelerator is back — the plank decides what happens
+       fail      a short plank was driven off, or a long one pitched the car
+                 over: the tumble plays, the screen fades, the car is reset
+                 on the lip and the question comes back with that answer out
+       done      across: the grid fades away and the plank stays for good
+     A wrong answer costs time, never a life: the lesson is the reset, and
+     a child who runs out of lives on arithmetic stops playing.             */
+  var SPAWN_T = 0.38, PLACE_T = 1.1, FAIL_T = 1.05, FADE_T = 0.45;
+
+  function nextChasm() {
+    var cs = G.track ? G.track.chasms : [], i;
+    for (i = 0; i < cs.length; i++) if (!cs[i].solved) return cs[i];
+    return null;
+  }
+
+  function armGap(v) {
+    if (G.gap) return;
+    var g = nextChasm();
+    if (!g || v.x < g.armX || v.x > g.bx) return;
+    G.gap = { g: g, phase: 'approach', t: 0, plank: null, len: 0, tries: 0,
+              wrong: {}, hint: false, fade: 0, grid: 0, tipped: false, pose0: null,
+              ruler: { open: 0, target: 0, cursor: 0, value: 0, keyT: 0 } };
+  }
+
+  /* Park the car dead: no creep while the player is thinking. */
+  function holdCar(v) {
+    v.vx = 0; v.vy = 0; v.av = 0;
+    v.wheels[0].omega = 0; v.wheels[1].omega = 0;
+  }
+
+  function clearCrash(v) {
+    v.crashed = false; v.crashReason = ''; v.upsideTime = 0; v.headLean = 0;
+  }
+
+  /* Per-frame control of the sequence. Returns an input override for the
+     physics, or null when the player has the pedals. */
+  function gapControl(dt) {
+    var q = G.gap, g = q.g, v = G.v;
+    q.t += dt;
+    q.grid = CG.approach(q.grid, q.phase === 'done' ? 0 : 1, q.phase === 'done' ? 2.2 : 3.5, dt);
+    q.ruler.open = CG.approach(q.ruler.open, q.ruler.target, 10, dt);
+    if (q.ruler.keyT > 0) q.ruler.keyT -= dt;
+    switch (q.phase) {
+      case 'approach': {
+        /* a speed target that shrinks with the distance left, so the car
+           rolls up and settles rather than slamming a wall — a fast arrival
+           still meets the barrier in gapAfterStep, in a cloud of dust */
+        var rem = g.stopX - v.x, sp = v.forwardSpeed();
+        var want = CG.clamp(rem * 2.4, 0, 260);
+        if (rem < 8 && Math.abs(sp) < 30) {
+          holdCar(v);
+          q.phase = 'ask'; q.t = 0;
+          A.sfx('check');
+          return COAST;
+        }
+        if (sp > want + 15 && sp > 20) return SLOWDOWN;
+        if (sp < want - 15) return CREEP;
+        return COAST;
+      }
+      case 'spawn':
+        if (q.t >= SPAWN_T) { q.phase = 'place'; q.t = 0; }
+        return COAST;
+      case 'place':
+        if (q.t >= PLACE_T) landPlank();
+        return COAST;
+      case 'fail':
+        q.fade = CG.clamp((q.t - (FAIL_T - FADE_T)) / FADE_T, 0, 1);
+        if (q.t >= FAIL_T) resetGap();
+        return COAST;
+      case 'done':
+        if (q.grid < 0.02) G.gap = null;
+        return null;
+    }
+    return null;
+  }
+
+  /* The player read a length off the ruler. */
+  G.answer = function (len) {
+    var q = G.gap;
+    if (!q || q.phase !== 'ask') return;
+    len = len | 0;
+    if (len < 1 || len > CG.Gaps.RULER_MAX || q.wrong[len]) return;
+    q.len = len;
+    q.ruler.value = len; q.ruler.target = 0;
+    q.plank = CG.Gaps.plankFor(q.g, len);
+    var L = Math.hypot(q.plank.x1 - q.plank.x0, q.plank.y1 - q.plank.y0);
+    /* born vertically above the machine, its lower end clear of the roof */
+    q.pose0 = { x: G.v.x, y: G.v.y - 80 - L / 2 };
+    q.phase = 'spawn'; q.t = 0;
+    A.sfx('plank');
+    for (var k = 0; k < 5; k++) FX.dust(q.pose0.x, q.pose0.y + L / 2, 0, -40, 0.6);
+  };
+
+  function ease(k) { k = CG.clamp(k, 0, 1); return k * k * (3 - 2 * k); }
+
+  /* Where the plank is right now, for the renderer. */
+  function plankPose() {
+    var q = G.gap, p = q.plank;
+    var L = Math.hypot(p.x1 - p.x0, p.y1 - p.y0), ang1 = Math.atan2(p.y1 - p.y0, p.x1 - p.x0);
+    var tx = (p.x0 + p.x1) / 2, ty = (p.y0 + p.y1) / 2;
+    if (q.phase === 'spawn') {
+      var k = q.t / SPAWN_T;
+      var sc = k < 0.7 ? ease(k / 0.7) * 1.12 : 1.12 - 0.12 * ease((k - 0.7) / 0.3);
+      return { x: q.pose0.x, y: q.pose0.y, ang: -Math.PI / 2, len: L, scale: sc };
+    }
+    if (q.phase === 'place') {
+      var kk = q.t / PLACE_T;
+      var kr = ease(kk / 0.6), ks = ease((kk - 0.28) / 0.72);
+      return { x: CG.lerp(q.pose0.x, tx, ks), y: CG.lerp(q.pose0.y, ty, ks) - Math.sin(ks * Math.PI) * 26,
+               ang: CG.lerp(-Math.PI / 2, ang1, kr), len: L };
+    }
+    return { x: tx, y: ty, ang: ang1, len: L };
+  }
+  G.plankPose = plankPose;
+
+  function landPlank() {
+    var q = G.gap, p = q.plank, v = G.v;
+    CG.Terrain.addPlank(p);
+    q.phase = 'drive'; q.t = 0; q.tipped = false;
+    A.sfx('slam');
+    R.shake = Math.max(R.shake, 9);
+    for (var k = 0; k < 6; k++) FX.dust(p.x0, p.y0, -60, 0, 1);
+    if (p.kind !== 'short') for (k = 0; k < 6; k++) FX.dust(p.x1, p.y1, 60, 0, 1);
+    if (p.kind === 'exact') {
+      FX.text((p.x0 + p.x1) / 2, Math.min(p.y0, p.y1) - 60, 'PERFECT FIT!', '#AED581', true);
+    }
+    FX.text(v.x, v.y - 110, 'GO!', '#FFD54F', true);
+    A.sfx('go');
+  }
+
+  function failGap() {
+    var q = G.gap;
+    if (q.phase !== 'drive') return;
+    q.phase = 'fail'; q.t = 0;
+    q.wrong[q.len] = true; q.tries++; q.hint = true;
+    R.shake = Math.max(R.shake, 12);
+  }
+
+  function resetGap() {
+    var q = G.gap, g = q.g, v = G.v;
+    CG.Terrain.setPlanks(CG.Terrain.planks.filter(function (p) { return p !== q.plank; }));
+    q.plank = null; q.tipped = false;
+    q.ruler.value = 0; q.ruler.cursor = 0;
+    v.reset(g.stopX);
+    clearCrash(v);
+    holdCar(v);
+    q.phase = 'ask'; q.t = 0; q.fade = 1;
+  }
+
+  function solveGap() {
+    var q = G.gap, g = q.g, v = G.v;
+    g.solved = true;
+    var bonus = q.tries === 0 ? 30 : 10;
+    if (q.tries === 0) G.firstTry++;
+    G.coins += bonus;
+    FX.text(v.x, v.y - 110, (q.tries === 0 ? 'FIRST TRY! +' : 'ACROSS! +') + bonus, '#FFD54F', true);
+    A.sfx('gem');
+    q.phase = 'done'; q.t = 0;
+  }
+
+  /* After the physics step: the barrier, and the three verdicts. */
+  function gapAfterStep(dt) {
+    var q = G.gap, g = q.g, v = G.v, p = q.plank, k;
+    if (q.phase === 'approach') {
+      if (v.x > g.stopX) {
+        var sp = v.vx;
+        v.x = g.stopX;
+        if (sp > 260) {
+          A.sfx('thud'); R.shake = Math.max(R.shake, 6);
+          for (k = 0; k < 4; k++) FX.dust(v.wheels[1].cpx, v.wheels[1].cpy, sp * 0.3, 0, 1);
+        }
+        v.vx = Math.min(0, v.vx);
+      }
+      return;
+    }
+    if (q.phase !== 'drive') return;
+    var Gp = CG.Gaps, deep = Math.max(g.ay, g.by) + 130;
+    if (p.kind === 'exact') {
+      if (v.x > g.bx + 150 && v.onGround) solveGap();
+      else if (v.crashed || v.y > deep) {
+        /* the answer was right; only the driving went wrong — same plank, try again */
+        v.reset(g.stopX); clearCrash(v); holdCar(v);
+      }
+      return;
+    }
+    if (p.kind === 'short') {
+      if (!q.tipped && Gp.shortTripped(v, p)) {
+        q.tipped = true; q.tipT = q.t;
+        Gp.boardGives(v);
+        A.sfx('wrong');
+        FX.text(v.x, v.y - 100, 'TOO SHORT!', '#EF5350', true);
+      }
+      if (q.tipped) {
+        Gp.tipPlank(p, dt);                            // the board gives way under the car
+        if (Math.random() < 0.5) FX.dust(p.x0, p.y0, -40, 0, 0.6);
+      }
+    } else {
+      if (!q.tipped && Gp.longTripped(v, p)) {
+        q.tipped = true; q.tipT = q.t;
+        Gp.wallFlip(v);                                // into the wall, over the nose
+        A.sfx('crash'); R.shake = Math.max(R.shake, 14);
+        for (k = 0; k < 8; k++) FX.dust(p.x1, v.y, -80, -40, 1);
+        FX.text(v.x, v.y - 100, 'TOO LONG!', '#EF5350', true);
+      }
+    }
+    if (q.tipped && Gp.failed(v, g, q.t - q.tipT)) failGap();
+  }
+
+  function stepPhysics(dt, live, force) {
     var v = G.v, i, w;
     var fuelDead = G.fuel <= 0;
     G.input.boost = G.boostT > 0;
-    var inp = live && !fuelDead ? G.input : { gas: 0, brake: 0, boost: false };
+    var inp = force || (live && !fuelDead ? G.input : COAST);
 
     acc += dt;
     var n = 0;
@@ -1567,17 +3497,32 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   }
 
   function updatePlay(dt) {
-    var v = G.v, i, w;
+    var v = G.v, i, w, force = null;
+
+    if (G.track) armGap(v);
+    if (G.gap) {
+      force = gapControl(dt);
+      if (G.gap && G.gap.phase === 'ask') {
+        /* the world waits: no clock, no fuel, the engine idling */
+        G.gap.fade = Math.max(0, G.gap.fade - dt / FADE_T);
+        stepPhysics(dt, false);
+        holdCar(v);
+        A.drive(0.05, 0, 0, G.fuel > 0);
+        return;
+      }
+    }
     G.time += dt;
 
     if (G.boostT > 0) G.boostT = Math.max(0, G.boostT - dt);
     if (G.invuln > 0) G.invuln -= dt;
 
     var wasAir = v.airTime;
-    stepPhysics(dt, true);
+    stepPhysics(dt, true, force);
+    if (G.gap) gapAfterStep(dt);
 
     /* fuel */
-    var throttling = (G.input.gas > 0 || G.input.brake > 0) && G.fuel > 0;
+    var eff = force || G.input;
+    var throttling = (eff.gas > 0 || eff.brake > 0) && G.fuel > 0;
     G.fuel = Math.max(0, G.fuel - (throttling ? FUEL_DRIVE : FUEL_IDLE) * dt);
     if (G.fuel <= 0) {
       if (G.deadT === 0) FX.text(v.x, v.y - 100, 'OUT OF FUEL', '#EF5350', true);
@@ -1589,6 +3534,22 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 
     /* distance + safe-ground memory for respawns */
     G.dist = Math.max(G.dist, v.x / CG.PPM);
+    CG.Env.update(G.dist, dt);
+
+    /* checkpoints: a refuel, a respawn point and the only pacing beat the
+       player gets on a long stage */
+    if (G.track) {
+      var cps = G.track.cps;
+      while (G.cpIdx + 1 < cps.length && v.x >= cps[G.cpIdx + 1]) {
+        G.cpIdx++;
+        G.cpX = cps[G.cpIdx];
+        G.fuel = Math.min(FUEL_MAX, G.fuel + CP_FUEL);
+        FX.text(v.x, v.y - 104, 'CHECKPOINT', '#AED581', true);
+        A.sfx('check');
+      }
+      G.progress = CG.clamp(v.x / G.track.finishX, 0, 1);
+      if (v.x >= G.track.finishX) { finishStage(); return; }
+    }
     if (v.onGround && Math.abs(v.a) < 0.5) {
       lastSafeT += dt;
       if (lastSafeT > 0.25) { lastSafeX = v.x; lastSafeT = 0; }
@@ -1644,9 +3605,10 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     collect(v);
 
     if (v.crashed) {
-      if (G.invuln > 0) { v.crashed = false; v.crashReason = ''; v.upsideTime = 0; }
+      if (G.gap && G.gap.phase !== 'done') { /* handled by the chasm: a reset, not a life */ }
+      else if (G.invuln > 0) { v.crashed = false; v.crashReason = ''; v.upsideTime = 0; }
       else if (G.safety > 0) useSafety();
-      else gameOver(v.crashReason);
+      else crashOut(v.crashReason);
     }
 
     A.drive(v.rpm, v.engineLoad, skid, G.fuel > 0);
@@ -1661,10 +3623,21 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var tz = CG.lerp(1.18, 0.95, CG.clamp(spd / 1000, 0, 1)) * (v.onGround ? 1 : 0.95);
     var tx = v.x + 0.12 * R.W / tz + CG.clamp(v.vx * 0.28, -140, 260);
     var ty = v.y - 0.05 * R.H / tz + CG.clamp(v.vy * 0.16, -80, 130);
+    var kx = 7.5, ky = 5.0;
+    if (G.gap && G.gap.phase !== 'done') {
+      /* frame the whole question: car, both lips, and sky for the grid; the
+         lips sit low in the frame so the plotted points have room above */
+      var g = G.gap.g, left = Math.min(v.x, g.stopX) - 170, right = g.bx + 200;
+      tz = CG.clamp(0.84 * R.W / (right - left), 0.55, 1.1);
+      tx = (left + right) / 2;
+      ty = (g.ay + g.by) / 2 - 0.15 * R.H / tz;      // both lips in frame, sky above for the ruler
+      if (G.gap.phase === 'fail') { ty = CG.lerp(ty, v.y, 0.85); ky = 7; }   // watch it fall
+      kx = 4; ky = 4;
+    }
     if (snap) { R.cam.x = tx; R.cam.y = ty; R.cam.z = tz; return; }
     R.cam.z = CG.approach(R.cam.z, tz, 2.2, dt);
-    R.cam.x = CG.approach(R.cam.x, tx, 7.5, dt);
-    R.cam.y = CG.approach(R.cam.y, ty, 5.0, dt);
+    R.cam.x = CG.approach(R.cam.x, tx, kx, dt);
+    R.cam.y = CG.approach(R.cam.y, ty, ky, dt);
     R.shake = CG.approach(R.shake, 0, 7, dt);
   }
 
@@ -1693,17 +3666,35 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     c.restore();
   }
 
+  /* The two controls the game cannot be played without, sitting on bright
+     grass and busy soil. At 0.42 opacity over a dark wash they were a pair of
+     ghost outlines: findable once you knew, invisible to a child meeting the
+     game. They now carry a solid disc, a drop shadow to lift them off the
+     ground texture, and a ring in their own action colour so gas and brake are
+     told apart by colour rather than by which side of the screen they are on. */
   function pedal(cx, cy, rad, dir, down) {
     var c = R.ctx;
     btn(dir > 0 ? 'gas' : 'brake', cx - rad, cy - rad, rad * 2, rad * 2, rad);
+    var hue = dir > 0 ? '#7CB342' : '#E53935';
     c.save();
-    c.globalAlpha = down ? 0.9 : 0.42;
     c.beginPath(); c.arc(cx, cy, rad, 0, CG.TAU);
-    c.fillStyle = down ? (dir > 0 ? '#7CB342' : '#E53935') : 'rgba(43,33,24,0.5)';
+    c.shadowColor = 'rgba(20,14,8,0.55)';
+    c.shadowBlur = 14;
+    c.shadowOffsetY = 3;
+    c.fillStyle = down ? hue : 'rgba(31,24,17,0.62)';
     c.fill();
-    c.lineWidth = 4; c.strokeStyle = 'rgba(236,239,241,0.6)'; c.stroke();
-    c.globalAlpha = down ? 1 : 0.8;
-    c.fillStyle = '#ECEFF1';
+    c.shadowColor = 'transparent'; c.shadowBlur = 0; c.shadowOffsetY = 0;
+    c.lineWidth = 4;
+    c.strokeStyle = down ? 'rgba(255,255,255,0.92)' : 'rgba(236,239,241,0.82)';
+    c.stroke();
+    /* the action colour, on a ring inside the rim */
+    c.beginPath(); c.arc(cx, cy, rad - 10, 0, CG.TAU);
+    c.lineWidth = 3;
+    c.globalAlpha = down ? 0.55 : 0.85;
+    c.strokeStyle = down ? '#FFF' : hue;
+    c.stroke();
+    c.globalAlpha = 1;
+    c.fillStyle = '#FFF';
     var k = rad * 0.34;
     for (var i = 0; i < 2; i++) {
       var ox = (i - 0.5) * k * 0.9 * dir;
@@ -1716,27 +3707,142 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     c.restore();
   }
 
-  function drawHUD() {
+  /* `coarse` drops the tenths — used for par and best-time labels, where a
+     decimal place is noise the player never acts on. */
+  function fmtTime(t, coarse) {
+    var m = Math.floor(t / 60), sec = t - m * 60;
+    if (coarse) sec = Math.round(sec);
+    if (coarse && sec === 60) { m++; sec = 0; }
+    return m + ':' + (sec < 10 ? '0' : '') + (coarse ? sec : sec.toFixed(1));
+  }
+
+  /* The route, drawn as one bar: where the checkpoints are, where the car is,
+     how much is left. It is the only place the stage objective is visible
+     while driving, so it stays readable at a glance and never moves. */
+  function progressRibbon() {
     var c = R.ctx, W = R.W;
-    /* distance + speed */
-    R.panel(16, 14, 214, 76, 18, 'rgba(43,33,24,0.42)');
-    R.text(Math.round(G.dist) + ' m', 30, 44, 34, '#FFF', 'left', 5);
-    R.text(Math.round(Math.hypot(G.v.vx, G.v.vy) / CG.PPM * 3.6) + ' km/h',
-           30, 74, 18, '#B3E5FC', 'left', 4);
-    if (G.best > 0) R.text('best ' + Math.round(G.best) + ' m', 148, 74, 15, '#FFE082', 'left', 3);
+    /* The top row is clock | ribbon | fuel. The ribbon gets whatever is left
+       between the other two, centred in THAT gap rather than on the screen —
+       and if the gap is too small to be worth reading (portrait), it drops to
+       its own row under the HUD instead of sliding under the fuel gauge. */
+    var freeL = 246, freeR = W - 292, free = freeR - freeL;
+    var narrow = free < 300;
+    var bw = narrow ? Math.min(W - 40, 520) : Math.min(520, free - 28);
+    var bx = narrow ? (W - bw) / 2 : freeL + (free - bw) / 2;
+    var by = narrow ? 196 : 30, bh = 14;
+    R.panel(bx - 14, by - 15, bw + 28, bh + 30, 14, 'rgba(43,33,24,0.42)');
+    /* The percentage reads as part of the bar, so it lives INSIDE the panel on
+       the bar's own centre line with its own reserved width. Hung under the
+       right-hand end it was a loose number on the scenery, and it pushed the
+       panel's only descender out past everything else in the top row. */
+    var lw = 48, barw = bw - lw;
+    R.roundRect(bx, by, barw, bh, bh / 2);
+    c.fillStyle = 'rgba(43,33,24,0.55)'; c.fill();
+    var k = CG.clamp(G.progress, 0, 1);
+    if (k > 0.004) {
+      R.roundRect(bx, by, Math.max(bh, barw * k), bh, bh / 2);
+      c.fillStyle = '#7CB342'; c.fill();
+    }
+    /* checkpoint pips */
+    var cps = G.track.cps, i, f;
+    for (i = 0; i < cps.length; i++) {
+      f = CG.clamp(cps[i] / G.track.finishX, 0, 1);
+      c.beginPath();
+      c.arc(bx + barw * f, by + bh / 2, 6, 0, CG.TAU);
+      c.fillStyle = i <= G.cpIdx ? '#FFD54F' : '#ECEFF1';
+      c.fill();
+      c.lineWidth = 2; c.strokeStyle = '#2B2118'; c.stroke();
+    }
+    /* chasm pips: a diamond per question, gold once it is bridged */
+    var cs = G.track.chasms, g;
+    for (i = 0; i < cs.length; i++) {
+      g = cs[i];
+      f = CG.clamp(g.ax / G.track.finishX, 0, 1);
+      c.save();
+      c.translate(bx + barw * f, by + bh / 2);
+      c.rotate(Math.PI / 4);
+      c.fillStyle = g.solved ? '#FFD54F' : '#C2185B';
+      c.fillRect(-6, -6, 12, 12);
+      c.lineWidth = 2; c.strokeStyle = '#2B2118'; c.strokeRect(-6, -6, 12, 12);
+      c.restore();
+    }
+    /* the car */
+    c.beginPath();
+    c.arc(bx + barw * k, by + bh / 2, 9, 0, CG.TAU);
+    c.fillStyle = '#E53935'; c.fill();
+    c.lineWidth = 2.5; c.strokeStyle = '#2B2118'; c.stroke();
+    R.text(Math.round(k * 100) + '%', bx + bw, by + bh / 2, 17, '#E1F5FE', 'right', 3);
+    R.text(G.stage ? G.stage.name : '', bx, by - 4, 17, '#FFE082', 'left', 3);
+  }
+
+  /* The left-hand readouts are ONE card, not three.
+     Clock, coins and lives used to be a 214-wide panel, a 140-wide panel and a
+     row of hearts with no panel at all, so the corner had three different left
+     edges and three different right edges and the hearts floated over the
+     scenery. One card, one width, hair-line rules between the groups: the eye
+     lands on the clock and walks down instead of hunting three shapes. */
+  var HUD_X = 16, HUD_W = 214, HUD_PAD = 14;
+
+  function hudRule(y) {
+    var c = R.ctx;
+    c.save();
+    c.globalAlpha = 0.5;
+    c.fillStyle = 'rgba(236,239,241,0.22)';
+    c.fillRect(HUD_X + HUD_PAD, y, HUD_W - HUD_PAD * 2, 1);
+    c.restore();
+  }
+
+  function drawHUD() {
+    var c = R.ctx, W = R.W, i;
+    var stage = G.mode === 'stage' && G.track;
+    /* a single heart says nothing, so the endless run's one life is not shown;
+       the row appears once there is a second heart to count */
+    var hearts = (stage ? G.lives : 0) + G.safety;
+    if (!stage && hearts < 2) hearts = 0;
+    /* the card is sized to what it actually holds, so no empty ledge */
+    var hudH = 134 + (hearts > 0 ? 42 : 0) + (stage ? 0 : 40);
+    R.panel(HUD_X, 14, HUD_W, hudH, 18, 'rgba(43,33,24,0.42)');
+
+    if (stage) {
+      /* clock first — it is what the second star is scored on */
+      var over = G.stage && G.time > G.stage.par;
+      R.text(fmtTime(G.time), 30, 46, 32, over ? '#FFCDD2' : '#FFF', 'left', 5);
+      R.text('par ' + fmtTime(G.stage.par, true), 30, 76, 16, '#B3E5FC', 'left', 3);
+      R.text(Math.round(Math.hypot(G.v.vx, G.v.vy) / CG.PPM * 3.6) + ' km/h',
+             148, 76, 16, '#B3E5FC', 'left', 3);
+      if (!(G.gap && G.gap.phase === 'ask')) progressRibbon();
+    } else {
+      R.text(Math.round(G.dist) + ' m', 30, 46, 32, '#FFF', 'left', 5);
+      R.text(Math.round(Math.hypot(G.v.vx, G.v.vy) / CG.PPM * 3.6) + ' km/h',
+             30, 76, 16, '#B3E5FC', 'left', 3);
+      if (G.best > 0) R.text('best ' + Math.round(G.best) + ' m', 148, 76, 15, '#FFE082', 'left', 3);
+    }
 
     /* coins */
-    R.panel(16, 100, 140, 44, 14, 'rgba(43,33,24,0.42)');
+    hudRule(96);
     var ci = CG.img.coin;
-    if (ci) c.drawImage(ci, 0, 0, CG.SHEETS.coin.frame, CG.SHEETS.coin.frame, 24, 108, 28, 28);
-    R.text(String(G.coins), 60, 123, 24, '#FFD54F', 'left', 4);
+    if (ci) c.drawImage(ci, 0, 0, CG.SHEETS.coin.frame, CG.SHEETS.coin.frame, 30, 106, 28, 28);
+    R.text(String(G.coins), 66, 121, 24, '#FFD54F', 'left', 4);
 
-    /* saves */
-    if (G.safety > 0) {
+    /* lives, then any extra saves picked up this run — one row, dimmer for the
+       extras, and the step tightens rather than running off the card */
+    var rowY = 140;
+    if (hearts > 0) {
+      hudRule(rowY);
       var hi = CG.img.heart;
-      for (var i = 0; i < G.safety; i++) {
-        if (hi) c.drawImage(hi, 22 + i * 30, 152, 26, 26);
+      var step = Math.min(28, (HUD_W - HUD_PAD * 2 - 26) / Math.max(1, hearts - 1));
+      for (i = 0; i < hearts && hi; i++) {
+        c.save();
+        c.globalAlpha = i < (stage ? G.lives : 0) ? 1 : 0.7;
+        c.drawImage(hi, 30 + i * step, rowY + 10, 26, 26);
+        c.restore();
       }
+      rowY += 42;
+    }
+    /* where and when: SUMMER · DUSK · RAIN — the thing this run is about */
+    if (!stage) {
+      hudRule(rowY);
+      R.text(CG.Env.label(), 30, rowY + 22, 14, '#E1F5FE', 'left', 3);
     }
 
     /* fuel */
@@ -1760,7 +3866,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 
     /* pedals — only while driving, so they cannot be mistaken for live
        controls on the pause or game-over screens */
-    if (G.state === 'play') {
+    var held = G.gap && G.gap.phase !== 'drive' && G.gap.phase !== 'done';
+    if (G.state === 'play' && !held) {
       var py = R.H - 96, pr = 62;
       pedal(104, py, pr, -1, G.input.brake > 0);
       pedal(W - 104, py, pr, 1, G.input.gas > 0);
@@ -1777,6 +3884,202 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       c.restore();
     }
   }
+
+  /* ------------------------------------------------------------ the ruler
+     The answer is measured, not picked from a list. Beside the jeep sits a
+     value box and an arrow. The arrow stretches a ruler up out of the box,
+     one unit per mark, RULER_MAX marks; the player taps the number the plank
+     needs, the ruler folds back with that number in the box, and the plank
+     drops. Lengths already tried and failed are crossed out on the ruler.
+     Screen-space: the ruler is a tool the player holds, not a thing in the
+     world, and it must stay the same size at any camera zoom. */
+  var RULER_W = 76, RULER_BOX = 52;
+
+  /* Where the box sits: at roof height, ahead of the jeep, clear of the
+     near lip's label. */
+  function rulerAnchor() {
+    var v = G.v, z = R.cam.z;
+    return { x: R.sx(v.x) + 126 * z, y: R.sy(v.y) - 44 * z };
+  }
+
+  function drawRuler(q) {
+    var c = R.ctx, ru = q.ruler, N = CG.Gaps.RULER_MAX, i;
+    var a = rulerAnchor(), box = RULER_BOX;
+    var vx = a.x, gx = a.x + box + 10, top = a.y - box / 2;      // value box, go button
+    /* the ruler stands on the value box; the step shrinks on a short screen */
+    var step = CG.clamp((top - 34) / N, 20, 34), full = N * step + 26;
+    var h = full * ru.open;
+    if (h > 2) {
+      var rx = vx + box / 2 - RULER_W / 2, ry = top - 10 - h;
+      c.save();
+      R.roundRect(rx - 3, ry - 3, RULER_W + 6, h + 6, 10); c.clip();
+      c.fillStyle = 'rgba(43,33,24,0.35)';
+      R.roundRect(rx + 3, ry + 5, RULER_W, full, 9); c.fill();
+      c.fillStyle = '#FFF7E3';
+      R.roundRect(rx, ry, RULER_W, full, 9); c.fill();
+      c.lineWidth = 3.5; c.strokeStyle = '#F2B02A'; c.stroke();
+      for (i = 1; i <= N; i++) {
+        var y = ry + 14 + (N - i) * step + step / 2, dead = !!q.wrong[i], cur = ru.cursor === i;
+        if (cur && !dead) {
+          R.roundRect(rx + 14, y - step * 0.42, RULER_W - 20, step * 0.84, 7);
+          c.fillStyle = Y_COL_UI; c.fill();
+        }
+        /* school-ruler ticks down the left edge: long per unit, short per quarter */
+        c.strokeStyle = dead ? 'rgba(93,64,55,0.3)' : '#5D4037';
+        c.lineWidth = 2;
+        c.beginPath(); c.moveTo(rx, y); c.lineTo(rx + 12, y); c.stroke();
+        c.lineWidth = 1.1;
+        c.beginPath();
+        for (var qq = 1; qq < 4; qq++) {
+          var yy = y - step * qq / 4, l = qq === 2 ? 8 : 5;
+          c.moveTo(rx, yy); c.lineTo(rx + l, yy);
+        }
+        c.stroke();
+        c.save();
+        if (dead) c.globalAlpha = 0.35;
+        R.text(String(i), rx + 14 + (RULER_W - 20) / 2, y + 1, Math.min(20, step * 0.66),
+               cur && !dead ? '#FFF' : NAVY_UI, 'center', 0);
+        c.restore();
+        if (dead) {
+          c.strokeStyle = '#E53935'; c.lineWidth = 3;
+          c.beginPath(); c.moveTo(rx + 22, y); c.lineTo(rx + RULER_W - 8, y); c.stroke();
+        }
+        if (ru.open > 0.95 && !dead) btn('rul' + i, rx - 6, y - step / 2, RULER_W + 12, step, 4);
+      }
+      /* the little pointer down onto the box */
+      c.fillStyle = '#F5B324';
+      c.beginPath(); c.moveTo(rx + RULER_W / 2 - 9, ry + full); c.lineTo(rx + RULER_W / 2 + 9, ry + full);
+      c.lineTo(rx + RULER_W / 2, ry + full + 9); c.closePath(); c.fill();
+      c.restore();
+    }
+    /* value box: dashed slot while empty, the number once chosen */
+    c.save();
+    R.roundRect(vx, top + 4, box, box, 10); c.fillStyle = 'rgba(43,33,24,0.45)'; c.fill();
+    R.roundRect(vx, top, box, box, 10); c.fillStyle = '#FFF'; c.fill();
+    c.lineWidth = 3; c.strokeStyle = '#8D9AA5'; c.stroke();
+    var shown = ru.value || ru.cursor;
+    if (shown) {
+      R.text(String(shown), vx + box / 2, top + box / 2 + 1, 27, ru.value ? '#1E63D6' : '#90A4AE', 'center', 0);
+    } else {
+      c.setLineDash([4, 4]); c.lineWidth = 2; c.strokeStyle = '#90A4AE';
+      R.roundRect(vx + 9, top + 10, box - 18, box - 20, 5); c.stroke();
+      c.setLineDash([]);
+    }
+    /* the amber button: opens the ruler, then confirms the number */
+    var ready = ru.target && ru.cursor && !q.wrong[ru.cursor] && q.phase === 'ask';
+    R.roundRect(gx, top + 4, box, box, 10); c.fillStyle = 'rgba(43,33,24,0.45)'; c.fill();
+    var pulse = ready ? 1 + 0.06 * Math.sin(G.time * 9 + q.t * 9) : 1;
+    c.save();
+    c.translate(gx + box / 2, top + box / 2); c.scale(pulse, pulse); c.translate(-(gx + box / 2), -(top + box / 2));
+    R.roundRect(gx, top, box, box, 10); c.fillStyle = ready ? '#FFB300' : '#FFC64D'; c.fill();
+    c.lineWidth = 3; c.strokeStyle = '#B7791F'; c.stroke();
+    var cx = gx + box / 2, cy = top + box / 2;
+    c.fillStyle = ready ? '#FFF' : '#5D4037';
+    if (!ru.target || ready) {                                 // play / go
+      c.beginPath(); c.moveTo(cx - 8, cy - 12); c.lineTo(cx + 12, cy); c.lineTo(cx - 8, cy + 12);
+      c.closePath(); c.fill();
+    } else {                                                   // open, nothing picked: fold
+      c.beginPath(); c.moveTo(cx - 11, cy - 5); c.lineTo(cx + 11, cy - 5); c.lineTo(cx, cy + 8);
+      c.closePath(); c.fill();
+    }
+    c.restore();
+    c.restore();
+    if (q.phase === 'ask') btn('rulopen', gx - 4, top - 4, box + 8, box + 8, 6);
+  }
+  var Y_COL_UI = '#1E5BD6', NAVY_UI = '#1A3C8C';
+
+  function drawGapUI() {
+    var q = G.gap, g = q.g, c = R.ctx, W = R.W, H = R.H;
+    if (q.phase === 'ask') {
+      var qq = g.q, ty = 56, gb = R.gridBox(g), ra = rulerAnchor();
+      /* centred over the grid pane, but never over the ruler */
+      var rulerRight = ra.x + RULER_BOX / 2 + RULER_W / 2 + 16;
+      var pw = CG.clamp(Math.min(W * 0.55, 560, W - rulerRight - 24), 260, 560);
+      var tx = CG.clamp((gb.left + gb.right) / 2, Math.min(rulerRight + pw / 2, W - pw / 2 - 16), W - pw / 2 - 16);
+      c.save();
+      R.roundRect(tx - pw / 2, ty - 32, pw, 64, 22);
+      c.fillStyle = 'rgba(205,228,255,0.9)'; c.fill();
+      c.lineWidth = 2; c.strokeStyle = 'rgba(255,255,255,0.8)'; c.stroke();
+      c.restore();
+      R.text('How many units should the plank be?', tx, ty, Math.min(27, pw / 21), '#1A3C8C', 'center', 0);
+      if (q.hint) {
+        var hint = qq.dy === 0
+          ? 'Hint: same height \u2014 just count across: ' + qq.dx
+          : 'Hint: ' + qq.dx + ' across and ' + qq.dy + ' up  \u2192  \u221a(' + qq.dx + '\u00b2 + ' + qq.dy + '\u00b2)';
+        c.save();
+        R.roundRect(tx - pw / 2, ty + 40, pw, 38, 16);
+        c.fillStyle = 'rgba(255,241,118,0.9)'; c.fill();
+        c.restore();
+        R.text(hint, tx, ty + 59, Math.min(17, pw / 30), '#4E342E', 'center', 0);
+      }
+      if (q.tries > 0) R.text('attempt ' + (q.tries + 1), tx + pw / 2 - 14, ty - 18, 13, '#1A3C8C', 'right', 0);
+      var ru = q.ruler;
+      var tip = !ru.target ? 'tap the arrow to open the ruler'
+              : ru.cursor && !q.wrong[ru.cursor] ? 'tap the green arrow to drop the plank'
+              : 'tap the number the plank needs';
+      R.text(tip, W / 2, H - 28, 17, 'rgba(236,239,241,0.85)', 'center', 3);
+      drawRuler(q);
+    } else if ((q.phase === 'spawn' || q.phase === 'place') && q.plank) {
+      drawRuler(q);                    // folded, showing the number chosen, until the plank lands
+    }
+    if (q.fade > 0.005) {
+      c.save();
+      c.globalAlpha = q.fade;
+      c.fillStyle = '#140E0A';
+      c.fillRect(0, 0, W, H);
+      c.restore();
+    }
+  }
+
+  /* ruler controls: the arrow, a mark, or the keyboard */
+  G.rulerToggle = function (open) {
+    var q = G.gap;
+    if (!q || q.phase !== 'ask') return;
+    q.ruler.target = open === undefined ? (q.ruler.target ? 0 : 1) : (open ? 1 : 0);
+    A.sfx('click');
+  };
+  /* highlight a mark; the plank does not drop until the button confirms */
+  G.rulerPick = function (k) {
+    var q = G.gap;
+    if (!q || q.phase !== 'ask' || k < 1 || k > CG.Gaps.RULER_MAX || q.wrong[k]) return;
+    if (!q.ruler.target) q.ruler.target = 1;
+    q.ruler.cursor = k;
+    A.sfx('click');
+  };
+  G.rulerConfirm = function () {
+    var q = G.gap;
+    if (!q || q.phase !== 'ask') return;
+    var k = q.ruler.cursor;
+    if (q.ruler.target && k && !q.wrong[k]) G.answer(k);
+  };
+  /* the amber button: open when folded, drop when a mark is lit, fold otherwise */
+  G.rulerButton = function () {
+    var q = G.gap;
+    if (!q || q.phase !== 'ask') return;
+    if (!q.ruler.target) G.rulerToggle(true);
+    else if (q.ruler.cursor && !q.wrong[q.ruler.cursor]) G.rulerConfirm();
+    else G.rulerToggle(false);
+  };
+  G.rulerKey = function (k) {
+    var q = G.gap, ru;
+    if (!q || q.phase !== 'ask') return false;
+    ru = q.ruler;
+    var N = CG.Gaps.RULER_MAX;
+    if (k === 'Enter') { G.rulerButton(); return true; }
+    if (k === 'ArrowUp' || k === 'ArrowDown') {
+      var n0 = CG.clamp((ru.cursor || 0) + (k === 'ArrowUp' ? 1 : -1), 1, N);
+      G.rulerPick(n0); if (!ru.target) ru.target = 1;
+      return true;
+    }
+    if (k >= '0' && k <= '9') {
+      /* two digits typed quickly make one number (1 then 3 -> 13) */
+      var d = +k, n = ru.keyT > 0 ? ru.cursor * 10 + d : d;
+      if (n < 1 || n > N) n = d;
+      if (n >= 1 && n <= N) { G.rulerPick(n); ru.keyT = 0.8; }
+      return true;
+    }
+    return false;
+  };
 
   function bigButton(id, cx, cy, w, h, label, colour, icon) {
     var c = R.ctx;
@@ -1803,15 +4106,37 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     c.fillRect(0, 0, R.W, R.H);
   }
 
+  /* n filled of 3. `t` staggers them in on the stage-clear screen. */
+  function starRow(cx, cy, n, size, t) {
+    var c = R.ctx, im = CG.img.star, gap = size * 1.12, i, x, pop;
+    for (i = 0; i < 3; i++) {
+      x = cx + (i - 1) * gap;
+      pop = t === undefined ? 1 : CG.clamp((t - 0.35 - i * 0.42) * 3.2, 0, 1);
+      var sc = i < n ? (0.7 + 0.3 * pop) * (1 + 0.25 * Math.sin(pop * Math.PI)) : 1;
+      c.save();
+      c.translate(x, cy);
+      c.scale(sc, sc);
+      c.globalAlpha = i < n ? pop : 0.22;
+      if (im) c.drawImage(im, -size / 2, -size / 2, size, size);
+      else {
+        c.beginPath(); c.arc(0, 0, size / 2, 0, CG.TAU);
+        c.fillStyle = i < n ? '#FFD54F' : '#455A64'; c.fill();
+      }
+      c.restore();
+    }
+  }
+
   function drawTitle() {
     var c = R.ctx, W = R.W, H = R.H;
     dim(0.3);
     var cy = H * 0.19;
     R.text('CLIMB', W / 2, cy, 96, '#FFD54F', 'center', 12);
-    R.text('endless hill racer', W / 2, cy + 60, 24, '#E1F5FE', 'center', 5);
+    R.text('how far can you drive?  through every season, day and night', W / 2, cy + 60, 24, '#E1F5FE', 'center', 5);
     bigButton('play', W / 2, H * 0.735, 300, 86, 'PLAY', '#7CB342', 'iconPlay');
     R.panel(W / 2 - 170, H * 0.735 + 64, 340, 50, 16, 'rgba(43,33,24,0.45)');
-    R.text('BEST ' + Math.round(G.best) + ' m', W / 2 - 78, H * 0.735 + 89, 24, '#FFE082', 'center', 4);
+    /* one run, one score: the best distance replaces the stage-star tally */
+    R.text('best ' + Math.round(G.best) + ' m', W / 2 - 152, H * 0.735 + 89,
+           24, '#FFE082', 'left', 4);
     var ci = CG.img.coin;
     if (ci) c.drawImage(ci, 0, 0, CG.SHEETS.coin.frame, CG.SHEETS.coin.frame,
                         W / 2 + 44, H * 0.735 + 75, 28, 28);
@@ -1821,17 +4146,98 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     iconBtn('mute', W - 46, 46, 26, G.muted ? 'soundOff' : 'soundOn', false);
   }
 
+  /* ------------------------------------------------------------ stage map */
+  function drawSelect() {
+    var c = R.ctx, W = R.W, H = R.H, n = CG.Stages.length;
+    dim(0.62);
+    R.text('CHOOSE A CLIMB', W / 2, H * 0.115, 46, '#FFD54F', 'center', 8);
+    R.text(G.totalStars() + ' of ' + (n * 3) + ' stars', W / 2, H * 0.165, 20,
+           '#E1F5FE', 'center', 4);
+
+    var cols = 4, rows = Math.ceil(n / cols);
+    var gap = 18, cw = Math.min(250, (W - 80 - gap * (cols - 1)) / cols), ch = 118;
+    var gx = (W - (cw * cols + gap * (cols - 1))) / 2, gy = H * 0.225;
+
+    for (var i = 0; i < n; i++) {
+      var st = CG.Stages[i], open = G.unlocked(i), rec = G.record(st.id);
+      var x = gx + (i % cols) * (cw + gap), y = gy + Math.floor(i / cols) * (ch + gap);
+      if (open) btn('s' + i, x, y, cw, ch, 16);
+      c.save();
+      R.roundRect(x, y, cw, ch, 16);
+      c.fillStyle = open ? 'rgba(43,33,24,0.72)' : 'rgba(43,33,24,0.45)';
+      c.fill();
+      c.lineWidth = 3;
+      c.strokeStyle = open ? '#AED581' : 'rgba(236,239,241,0.25)';
+      c.stroke();
+      c.restore();
+      R.text(String(st.id), x + 18, y + 34, 26, open ? '#FFD54F' : '#78909C', 'left', 4);
+      R.text(open ? st.name : 'LOCKED', x + 46, y + 33, 19,
+             open ? '#FFF' : '#78909C', 'left', 3);
+      if (open) {
+        R.text(st.sub, x + 18, y + 56, 15, '#B3E5FC', 'left', 3);
+        starRow(x + cw / 2, y + 84, rec ? rec.s : 0, 26);
+        if (rec) R.text(fmtTime(rec.t), x + cw - 14, y + 108, 14, '#AED581', 'right', 3);
+      } else {
+        R.text('clear stage ' + i + ' first', x + 18, y + 78, 15, '#90A4AE', 'left', 3);
+      }
+    }
+
+    var by = gy + rows * (ch + gap) + 26;
+    if (G.endlessOpen()) {
+      bigButton('endless', W / 2 - 130, Math.min(by, H - 62), 240, 62, 'ENDLESS', '#FFA000', null);
+      bigButton('home', W / 2 + 130, Math.min(by, H - 62), 200, 62, 'HOME', '#607D8B', 'iconHome');
+    } else {
+      bigButton('home', W / 2, Math.min(by, H - 62), 240, 62, 'HOME', '#607D8B', 'iconHome');
+    }
+    iconBtn('mute', W - 46, 46, 26, G.muted ? 'soundOff' : 'soundOn', false);
+  }
+
+  /* --------------------------------------------------------- stage clear */
+  function drawWin() {
+    var c = R.ctx, W = R.W, H = R.H, st = G.stage;
+    dim(0.55);
+    R.text('STAGE CLEAR', W / 2, H * 0.17, 56, '#AED581', 'center', 9);
+    R.text(st.name, W / 2, H * 0.235, 26, '#FFE082', 'center', 5);
+    starRow(W / 2, H * 0.36, G.stars, 76, G.winT);
+
+    /* results panel: label | value | what the star needed, on a fixed grid so
+       a long time or a four-digit coin count cannot collide */
+    var pw = 470, px = W / 2 - pw / 2, ly = H * 0.50;
+    R.panel(px, ly - 34, pw, 150, 16, 'rgba(43,33,24,0.62)');
+    var lab = px + 28, val = px + 268, goal = px + pw - 24;
+    R.text('TIME', lab, ly, 17, '#B3E5FC', 'left', 3);
+    R.text(fmtTime(G.time), val, ly, 24,
+           G.time <= st.par ? '#AED581' : '#FFCDD2', 'right', 4);
+    R.text('par ' + fmtTime(st.par, true), goal, ly, 15, '#90A4AE', 'right', 3);
+    R.text('COINS', lab, ly + 36, 17, '#B3E5FC', 'left', 3);
+    R.text(String(G.coins), val, ly + 36, 24,
+           G.coins >= st.coins ? '#AED581' : '#FFCDD2', 'right', 4);
+    R.text('goal ' + st.coins, goal, ly + 36, 15, '#90A4AE', 'right', 3);
+    R.text('GAPS', lab, ly + 72, 17, '#B3E5FC', 'left', 3);
+    R.text(G.firstTry + ' / ' + G.gapCount, val, ly + 72, 24,
+           G.firstTry === G.gapCount ? '#AED581' : '#FFE082', 'right', 4);
+    R.text('first try', goal, ly + 72, 15, '#90A4AE', 'right', 3);
+    if (G.newBest) R.text('NEW BEST TIME!', W / 2, ly + 100, 18, '#FFD54F', 'center', 4);
+
+    var last = G.stageIdx >= CG.Stages.length - 1;
+    bigButton(last ? 'map' : 'next', W / 2 - 110, H * 0.75, 260, 76,
+              last ? 'MAP' : 'NEXT', '#7CB342', 'iconPlay');
+    bigButton('retry', W / 2 + 130, H * 0.75, 200, 76, 'RETRY', '#FFA000', 'iconRestart');
+    bigButton('map', W / 2, H * 0.885, 200, 56, 'STAGE MAP', '#607D8B', 'iconHome');
+  }
+
   function drawPaused() {
     var W = R.W, H = R.H;
     dim(0.55);
     R.text('PAUSED', W / 2, H * 0.26, 62, '#FFF', 'center', 8);
     bigButton('resume', W / 2, H * 0.46, 300, 80, 'RESUME', '#7CB342', 'iconPlay');
     bigButton('retry', W / 2, H * 0.62, 300, 72, 'RESTART', '#FFA000', 'iconRestart');
-    bigButton('home', W / 2, H * 0.77, 300, 72, 'QUIT', '#607D8B', 'iconHome');
+    bigButton(G.mode === 'stage' ? 'map' : 'home', W / 2, H * 0.77, 300, 72,
+              G.mode === 'stage' ? 'STAGE MAP' : 'QUIT', '#607D8B', 'iconHome');
   }
 
   var REASON = {
-    head: 'OUCH! HEAD FIRST',
+    head: 'LANDED ON THE ROOF',
     flipped: 'FLIPPED OVER',
     fuel: 'OUT OF FUEL'
   };
@@ -1840,14 +4246,24 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var c = R.ctx, W = R.W, H = R.H;
     dim(0.55);
     R.text(REASON[G.reason] || 'CRASHED', W / 2, H * 0.2, 46, '#EF5350', 'center', 7);
-    R.text(Math.round(G.dist) + ' m', W / 2, H * 0.33, 84, '#FFF', 'center', 9);
-    if (G.newBest) R.text('NEW BEST!', W / 2, H * 0.42, 30, '#FFD54F', 'center', 6);
-    else R.text('best ' + Math.round(G.best) + ' m', W / 2, H * 0.42, 22, '#FFE082', 'center', 4);
+    if (G.mode === 'stage' && G.track) {
+      R.text('STAGE FAILED', W / 2, H * 0.3, 40, '#FFF', 'center', 7);
+      R.text(G.stage.name + '  —  ' + Math.round(G.progress * 100) + '% of the route',
+             W / 2, H * 0.375, 24, '#FFE082', 'center', 5);
+      R.text(G.cpIdx >= 0 ? 'you reached checkpoint ' + (G.cpIdx + 1)
+                          : 'no checkpoint reached', W / 2, H * 0.43, 19,
+             '#B3E5FC', 'center', 4);
+    } else {
+      R.text(Math.round(G.dist) + ' m', W / 2, H * 0.33, 84, '#FFF', 'center', 9);
+      if (G.newBest) R.text('NEW BEST!', W / 2, H * 0.42, 30, '#FFD54F', 'center', 6);
+      else R.text('best ' + Math.round(G.best) + ' m', W / 2, H * 0.42, 22, '#FFE082', 'center', 4);
+    }
     var ci = CG.img.coin;
     if (ci) c.drawImage(ci, 0, 0, CG.SHEETS.coin.frame, CG.SHEETS.coin.frame, W / 2 - 60, H * 0.48, 32, 32);
     R.text('+' + G.coins, W / 2 - 18, H * 0.48 + 16, 28, '#FFD54F', 'left', 5);
-    bigButton('retry', W / 2, H * 0.66, 320, 86, 'PLAY AGAIN', '#7CB342', 'iconRestart');
-    bigButton('home', W / 2, H * 0.81, 240, 66, 'HOME', '#607D8B', 'iconHome');
+    bigButton('retry', W / 2, H * 0.66, 320, 86, 'TRY AGAIN', '#7CB342', 'iconRestart');
+    bigButton(G.mode === 'stage' ? 'map' : 'home', W / 2, H * 0.81, 240, 66,
+              G.mode === 'stage' ? 'STAGE MAP' : 'HOME', '#607D8B', 'iconHome');
   }
 
   /* --------------------------------------------------------------- draw */
@@ -1855,22 +4271,39 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var c = R.ctx;
     buttons.length = 0;
     R.begin();
+    var q = G.gap;
     R.drawBackground();
+    R.horizon();
+    R.drawGroundHaze();
     R.drawProps(true);
+    if (q) R.drawGrid(q.g, q.grid);
+    if (G.track) R.drawChasmDepth(G.track);
     R.drawTerrain();
+    if (G.track) R.drawChasmWalls(G.track);
     R.drawProps(false);
+    if (G.track) R.drawFinish(G.track, G.time);
     R.drawPickups(G.time);
     R.drawFX(false);
+    R.drawPlanks(q && q.plank);
+    if (q && q.plank && q.phase !== 'ask') {
+      R.drawPlank(G.plankPose(), q.len + ' units');
+    }
+    if (q) R.drawGapPoints(q.g, q.grid, q.hint && q.phase === 'ask');
     R.drawVehicle(G.v, dt);
     R.drawFX(true);
     R.drawForeground();
+    R.drawGrade();
+    R.drawWeather(dt);
     R.drawTexts();
 
     if (G.state === 'title') drawTitle();
+    else if (G.state === 'select') drawSelect();
     else {
       drawHUD();
+      if (q && G.state === 'play') drawGapUI();
       if (G.state === 'paused') drawPaused();
       else if (G.state === 'over') drawOver();
+      else if (G.state === 'win') drawWin();
     }
   }
 
@@ -1896,11 +4329,21 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       updatePlay(dt);
       updateCamera(dt, false);
       FX.update(dt);
-    } else if (G.state === 'title') {
+    } else if (G.state === 'title' || G.state === 'select') {
       G.time += dt;
       stepPhysics(dt, false);
       updateCamera(dt * 0.6, false);
       FX.update(dt);
+    } else if (G.state === 'win') {
+      G.winT += dt;
+      stepPhysics(dt, false, SLOWDOWN);      // the driver eases to a stop
+      updateCamera(dt, false);
+      FX.update(dt);
+      A.drive(0, 0, 0, false);
+      /* one chime per star, timed to the pop in starRow() */
+      var want = 0;
+      for (var si = 0; si < G.stars; si++) if (G.winT > 0.35 + si * 0.42) want++;
+      if (want > G.starsPopped) { G.starsPopped = want; A.sfx('star'); }
     } else if (G.state === 'over') {
       G.time += dt;
       stepPhysics(dt, false);
@@ -1931,8 +4374,23 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 
   function press(id) {
     A.sfx('click');
+    if (id === 'rulopen') { G.rulerButton(); return; }
+    if (id.slice(0, 3) === 'rul') {
+      var k = +id.slice(3);
+      if (G.gap && G.gap.ruler.cursor === k) G.rulerConfirm(); else G.rulerPick(k);   // twice = go
+      return;
+    }
+    if (id.charAt(0) === 's' && id.length > 1 && id !== 'select') {
+      var i = +id.slice(1);
+      if (i === i && G.unlocked(i)) G.startStage(i);
+      return;
+    }
     switch (id) {
-      case 'play': case 'retry': G.newRun(); break;
+      case 'play': G.startEndless(); A.music(true); break;
+      case 'retry': G.restart(); break;
+      case 'next': G.startStage(G.stageIdx + 1); break;
+      case 'map': G.toSelect(); break;
+      case 'endless': G.startEndless(); break;
       case 'home': G.toTitle(); break;
       case 'pause': if (G.state === 'play') G.state = 'paused'; break;
       case 'resume': if (G.state === 'paused') G.state = 'play'; break;
@@ -1961,6 +4419,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       if (G.state === 'title') { pointers[e.pointerId] = 'play'; press('play'); }
       return;
     }
+    if (G.gap && G.gap.phase !== 'drive' && G.gap.phase !== 'done') return;   // pedals are away
     /* whole bottom half is a pedal — forgiving on touch */
     var side = p.x > R.W / 2 ? 'gas' : 'brake';
     pointers[e.pointerId] = side;
@@ -1984,6 +4443,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 
   function onKey(e, dn) {
     var k = e.key;
+    if (dn && G.state === 'play' && G.gap && G.gap.phase === 'ask' && G.rulerKey(k)) {
+      e.preventDefault(); return;
+    }
     if (k === 'ArrowRight' || k === 'd' || k === 'D') keys.right = dn;
     else if (k === 'ArrowLeft' || k === 'a' || k === 'A') keys.left = dn;
     else if (k === ' ' || k === 'ArrowUp' || k === 'w' || k === 'W') keys.space = dn;
@@ -1993,7 +4455,10 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       if (G.state !== 'title') press('retry');
     } else if (dn && (k === 'm' || k === 'M')) press('mute');
     else if (dn && (k === 'Enter') && G.state !== 'play') {
-      press(G.state === 'title' ? 'play' : 'retry');
+      if (G.state === 'title') press('play');
+      else if (G.state === 'win') press(G.stageIdx >= CG.Stages.length - 1 ? 'map' : 'next');
+      else if (G.state === 'select') press('s' + G.stageIdx);
+      else press('retry');
     } else return;
     if (dn) { A.init(); A.resume(); }
     e.preventDefault();
@@ -2047,15 +4512,26 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       function (p) { fill.style.width = Math.round(p * 100) + '%'; },
       function (failed) {
         if (failed.length) msg.textContent = failed.length + ' asset(s) missing';
+        CG.loadThemes();
+        /* ?season=winter&clock=0.95&weather=snow pins the scene, for looking */
+        if (opts.season || opts.clock || opts.weather) {
+          CG.Env.force = { season: opts.season || undefined,
+                           clock: opts.clock !== undefined ? +opts.clock : undefined,
+                           weather: opts.weather || undefined };
+        }
         G.toTitle();
-        if (opts.demo || opts.seed) {
-          G.newRun();
+        if (opts.demo || opts.seed || opts.stage) {
           if (opts.seed) {
+            /* ?seed=123 is an endless replay of one exact noise field */
+            G.startEndless();
             G.seed = (+opts.seed) | 0 || 1;
             CG.Terrain.setSeed(G.seed);
-            CG.World.init(G.seed);
+            CG.Terrain.setTrack(null);
+            CG.World.init(G.seed, null);
             G.v.reset(160);
             R.cam.x = G.v.x; R.cam.y = G.v.y;
+          } else {
+            G.startStage(((+opts.stage) | 0 || 1) - 1);
           }
           if (opts.demo) G.input.gas = 1;
         }
