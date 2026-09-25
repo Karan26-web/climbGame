@@ -35,7 +35,7 @@ const kmh = px => (px / CG.PPM * 3.6).toFixed(1);
 
 console.log('=== settle on flat (2s, no input) ===');
 let v = run(flat, 2, NONE);
-console.log(`  chassis y ${v.y.toFixed(2)}  (expected ${300 - CG.VConst.WHEEL_R - 18} = ground - R - COM)`);
+console.log(`  chassis y ${v.y.toFixed(2)}  (expected ${300 - CG.VConst.WHEEL_R - CG.VConst.COM_ABOVE_AXLE} = ground - R - COM)`);
 console.log(`  sag r/f ${v.wheels[0].s.toFixed(2)}/${v.wheels[1].s.toFixed(2)}  (static ${CG.VConst.sagRear.toFixed(2)}/${CG.VConst.sagFront.toFixed(2)}, load ${(100*CG.VConst.shareRear).toFixed(0)}/${(100*CG.VConst.shareFront).toFixed(0)}%)`);
 console.log(`  angle ${(v.a * 57.3).toFixed(2)} deg   drift vx ${v.vx.toFixed(2)}  vy ${v.vy.toFixed(3)}`);
 
