@@ -2762,15 +2762,17 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      across leg and every x are the x orange; the up leg and every y are the
      y blue, so the colours carry the maths. */
   var X_COL = '#FF9F1C', Y_COL = '#1F6BFF', PT_COL = '#8E2FD0', NAVY = '#1B2A5E';
-  var KEY = 'rgba(255,255,255,0.95)';
+  var KEY = 'rgba(255,255,255,0.9)';
+  var CW = 700;                     // chasm text weight: lighter than the menus' 900
+  R.CW = CW;
   R.X_COL = X_COL; R.Y_COL = Y_COL; R.PT_COL = PT_COL; R.NAVY = NAVY;
 
   /* text on a soft stroke: dark on a white halo, or white on a navy one */
   function haloText(str, x, y, size, fill, align, halo) {
     var c = R.ctx;
-    c.font = R.font(size);
+    c.font = R.font(size, false, CW);
     c.textAlign = align || 'center'; c.textBaseline = 'middle';
-    c.lineJoin = 'round'; c.lineWidth = Math.max(3, size * 0.3);
+    c.lineJoin = 'round'; c.lineWidth = Math.max(2.5, size * 0.22);
     c.strokeStyle = halo || KEY;
     c.strokeText(str, x, y);
     c.fillStyle = fill || NAVY; c.fillText(str, x, y);
@@ -2780,13 +2782,13 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   /* a run of differently coloured pieces, centred on x: "(", "2", ", ", "0", ")" */
   R.textRun = function (parts, x, y, size, halo) {
     var c = R.ctx, w = 0, i;
-    c.font = R.font(size);
+    c.font = R.font(size, false, CW);
     for (i = 0; i < parts.length; i++) w += c.measureText(parts[i][0]).width;
     var cx = x - w / 2;
     for (i = 0; i < parts.length; i++) {
       if (halo) haloText(parts[i][0], cx, y, size, parts[i][1], 'left', halo);
-      else R.text(parts[i][0], cx, y, size, parts[i][1], 'left', 0);
-      c.font = R.font(size);
+      else R.text(parts[i][0], cx, y, size, parts[i][1], 'left', 0, false, CW);
+      c.font = R.font(size, false, CW);
       cx += c.measureText(parts[i][0]).width;
     }
     return w;
@@ -2797,7 +2799,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var c = R.ctx;
     opt = opt || {};
     c.save();
-    c.shadowColor = 'rgba(20,40,110,0.28)'; c.shadowBlur = 18; c.shadowOffsetY = 5;
+    c.shadowColor = 'rgba(20,40,110,0.16)'; c.shadowBlur = 14; c.shadowOffsetY = 3;
     R.roundRect(x, y, w, h, r);
     var g = c.createLinearGradient(0, y, 0, y + h);
     g.addColorStop(0, opt.top || 'rgba(246,251,255,0.97)');
@@ -2806,7 +2808,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     c.restore();
     c.save();
     R.roundRect(x, y, w, h, r);
-    c.lineWidth = opt.edgeW || 3.5; c.strokeStyle = opt.edge || 'rgba(255,255,255,0.98)'; c.stroke();
+    c.lineWidth = opt.edgeW || 2; c.strokeStyle = opt.edge || 'rgba(255,255,255,0.98)'; c.stroke();
     R.roundRect(x + 5, y + 4, w - 10, h * 0.42, Math.max(0, r - 4));
     c.fillStyle = 'rgba(255,255,255,0.4)'; c.fill();
     c.restore();
@@ -2821,7 +2823,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var g = c.createLinearGradient(-w / 2, 0, w / 2, 0);
     g.addColorStop(0, '#6FB2FF'); g.addColorStop(1, '#2B6FE8');
     c.fillStyle = g; c.fill();
-    c.lineWidth = Math.max(2, s * 0.07); c.strokeStyle = '#1446B8'; c.stroke();
+    c.lineWidth = Math.max(1.5, s * 0.045); c.strokeStyle = '#1446B8'; c.stroke();
     c.strokeStyle = '#FFFFFF'; c.lineWidth = Math.max(1.5, s * 0.05); c.lineCap = 'round';
     c.beginPath();
     for (i = 1; i < 7; i++) {
@@ -2837,7 +2839,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   R.flick = function (x, y, s, dir, tilt) {
     var c = R.ctx, t = tilt || 0, a = [t - 0.7, t, t + 0.7], i;
     c.save();
-    c.lineCap = 'round'; c.strokeStyle = '#FFA51F'; c.lineWidth = Math.max(2.5, s * 0.16);
+    c.lineCap = 'round'; c.strokeStyle = '#FFA51F'; c.lineWidth = Math.max(2, s * 0.1);
     for (i = 0; i < 3; i++) {
       var ux = Math.cos(a[i]) * dir, uy = Math.sin(a[i]);
       c.beginPath(); c.moveTo(x + ux * s * 0.25, y + uy * s * 0.25);
@@ -2877,8 +2879,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     c.fillStyle = pg; c.fill('evenodd');
     c.save();
     R.roundRect(left, top, right - left, bottom - top, rad); c.clip();
-    c.lineWidth = 1.5;
-    c.strokeStyle = 'rgba(255,255,255,0.55)';
+    c.lineWidth = 1;
+    c.strokeStyle = 'rgba(255,255,255,0.5)';
     c.beginPath();
     for (i = b.minGX; i <= b.maxGX; i++) {
       x = Math.round(R.sx(gap.ox + i * U)) + 0.5;
@@ -2895,21 +2897,21 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     c.fillStyle = sh; c.fillRect(left, top, right - left, 90 * z);
     c.restore();
     R.roundRect(left, top, right - left, bottom - top, rad);
-    c.lineWidth = 3; c.strokeStyle = 'rgba(255,255,255,0.85)'; c.stroke();
+    c.lineWidth = 2; c.strokeStyle = 'rgba(255,255,255,0.8)'; c.stroke();
     /* The axes arrive a beat after the pane — see the reveal in gapControl. */
     var aa = axisAlpha === undefined ? 1 : axisAlpha;
     if (aa <= 0.01) { c.restore(); return; }
     c.globalAlpha = alpha * aa;
     /* THE NUMBER LINE: an orange x-axis and a blue y-axis, one arrowhead at
        the positive end of each, a tick every unit, a number every two */
-    var ax = R.sx(gap.ox), ay = R.sy(gap.oy), arrow = 18 * z, tick = 9 * z;
-    var fs = Math.max(15, 20 * z), over = 0.45 * U * z;
+    var ax = R.sx(gap.ox), ay = R.sy(gap.oy), arrow = 14 * z, tick = 7 * z;
+    var fs = Math.max(13, 17 * z), over = 0.45 * U * z;
     var every = 2;
     function axisLine(x0, y0, x1, y1, col) {
       c.lineCap = 'round';
-      c.lineWidth = 9; c.strokeStyle = 'rgba(255,255,255,0.55)';
+      c.lineWidth = 6; c.strokeStyle = 'rgba(255,255,255,0.4)';
       c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.stroke();
-      c.lineWidth = 5; c.strokeStyle = col;
+      c.lineWidth = 3; c.strokeStyle = col;
       c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.stroke();
     }
     function arrowHead(x0, y0, dx, dy, col) {
@@ -2918,7 +2920,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       c.lineTo(x0 - dy * arrow * 0.62, y0 + dx * arrow * 0.62);
       c.lineTo(x0 + dy * arrow * 0.62, y0 - dx * arrow * 0.62);
       c.closePath();
-      c.lineJoin = 'round'; c.lineWidth = 3; c.strokeStyle = col; c.stroke();
+      c.lineJoin = 'round'; c.lineWidth = 1.5; c.strokeStyle = col; c.stroke();
       c.fillStyle = col; c.fill();
     }
     var xL = left, xR = right - over;
@@ -2930,7 +2932,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       axisLine(ax, yB, ax, yT, Y_COL);
       arrowHead(ax, yT, 0, -1, Y_COL);
     }
-    c.lineCap = 'round'; c.lineWidth = 3.5;
+    c.lineCap = 'round'; c.lineWidth = 2;
     c.strokeStyle = X_COL;
     c.beginPath();
     for (i = b.minGX; i <= b.maxGX; i++) {
@@ -2955,7 +2957,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     for (i = b.minGX; i <= b.maxGX; i++) {
       if (i % every) continue;
       x = R.sx(gap.ox + i * U); if (x > xR - arrow) continue;
-      haloText(R.coord(i), x, ay + tick + fs * 0.95, fs, '#FFFFFF', 'center', 'rgba(27,42,94,0.85)');
+      haloText(R.coord(i), x, ay + tick + fs * 0.95, fs, '#FFFFFF', 'center', 'rgba(27,42,94,0.6)');
     }
     if (showY) for (i = b.minGY; i <= b.maxGY; i++) {
       if (i === 0 || i % every) continue;
@@ -2964,16 +2966,16 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     }
     /* axis letters on little white tiles */
     function badge(txt, x, y, col) {
-      var w = fs * 1.75, h = fs * 1.75;
+      var w = fs * 1.6, h = fs * 1.6;
       c.save();
-      c.shadowColor = 'rgba(20,40,110,0.25)'; c.shadowBlur = 8; c.shadowOffsetY = 2;
+      c.shadowColor = 'rgba(20,40,110,0.15)'; c.shadowBlur = 6; c.shadowOffsetY = 1;
       R.roundRect(x - w / 2, y - h / 2, w, h, 8);
       c.fillStyle = '#FFFFFF'; c.fill();
       c.restore();
       R.roundRect(x - w / 2, y - h / 2, w, h, 8);
       c.fillStyle = 'rgba(255,241,220,0.6)'; if (col === Y_COL) c.fillStyle = 'rgba(225,238,255,0.6)';
       c.fill();
-      R.text(txt, x, y - fs * 0.05, fs * 1.3, col, 'center', 0);
+      R.text(txt, x, y - fs * 0.05, fs * 1.15, col, 'center', 0, false, CW);
     }
     badge('x', xR + arrow + fs * 1.2, ay - fs * 1.2, X_COL);
     if (showY) badge('y', ax + fs * 1.7, yT + fs * 0.2, Y_COL);
@@ -3115,7 +3117,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     if (!gap || Math.max(aA, aB) <= 0.01) return;
     var c = R.ctx, z = R.cam.z;
     var ax = R.sx(gap.ax), ay = R.sy(gap.ay), bx = R.sx(gap.bx), by = R.sy(gap.by);
-    var r = 11 * z, fs = Math.max(15, 22 * z), th = fs * 1.6, lift = r + 16 * z;
+    var r = 8 * z, fs = Math.max(13, 18 * z), th = fs * 1.65, lift = r + 14 * z;
     c.save();
     c.globalAlpha = Math.min(aA, aB);
     /* the span to measure: a dashed orange line lifted just above the two
@@ -3125,11 +3127,11 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var off = lift, x0 = ax + nx * off, y0 = ay + ny * off, x1 = bx + nx * off, y1 = by + ny * off;
     if (!legs) {
       c.lineCap = 'round';
-      c.strokeStyle = X_COL; c.lineWidth = 3;
+      c.strokeStyle = X_COL; c.lineWidth = 2;
       c.beginPath(); c.moveTo(ax + nx * r, ay + ny * r); c.lineTo(x0, y0);
       c.moveTo(bx + nx * r, by + ny * r); c.lineTo(x1, y1); c.stroke();
-      c.setLineDash([10 * z, 8 * z]);
-      c.strokeStyle = 'rgba(255,165,31,0.9)';
+      c.setLineDash([8 * z, 7 * z]); c.lineWidth = 2;
+      c.strokeStyle = 'rgba(255,165,31,0.85)';
       c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.stroke();
       c.setLineDash([]);
     } else {
@@ -3138,16 +3140,16 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       c.lineCap = 'round';
       function leg(xa, ya, xb, yb, col, dash) {
         c.setLineDash(dash ? [10 * z, 8 * z] : []);
-        c.lineWidth = 7; c.strokeStyle = 'rgba(255,255,255,0.6)';
+        c.lineWidth = 5; c.strokeStyle = 'rgba(255,255,255,0.45)';
         c.beginPath(); c.moveTo(xa, ya); c.lineTo(xb, yb); c.stroke();
-        c.lineWidth = 3.5; c.strokeStyle = col;
+        c.lineWidth = 2.5; c.strokeStyle = col;
         c.beginPath(); c.moveTo(xa, ya); c.lineTo(xb, yb); c.stroke();
       }
       leg(ax, ay, cx, cy, X_COL, false);
       if (q.dy) leg(cx, cy, bx, by, Y_COL, false);
       leg(ax, ay, bx, by, PT_COL, true);
       c.setLineDash([]);
-      var ls = Math.max(18, 24 * z);
+      var ls = Math.max(15, 20 * z);
       haloText(String(q.dx), (ax + cx) / 2, cy + ls * 1.1, ls, X_COL, 'center');
       if (q.dy) haloText(String(q.dy), cx + ls * 0.9, (cy + by) / 2, ls, Y_COL, 'left');
     }
@@ -3163,8 +3165,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       c.translate(p[0], p[1]); c.scale(pop, pop); c.translate(-p[0], -p[1]);
       /* a glossy purple bead on a white ring */
       c.save();
-      c.shadowColor = 'rgba(60,10,110,0.4)'; c.shadowBlur = 8; c.shadowOffsetY = 2;
-      c.beginPath(); c.arc(p[0], p[1], r + 3.5, 0, CG.TAU);
+      c.shadowColor = 'rgba(60,10,110,0.3)'; c.shadowBlur = 6; c.shadowOffsetY = 1;
+      c.beginPath(); c.arc(p[0], p[1], r + 2.5, 0, CG.TAU);
       c.fillStyle = '#FFFFFF'; c.fill();
       c.restore();
       c.beginPath(); c.arc(p[0], p[1], r, 0, CG.TAU);
@@ -3175,15 +3177,15 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       c.fillStyle = 'rgba(255,255,255,0.75)'; c.fill();
       /* its label: a white speech bubble in a purple rim, pointing down */
       var txt = R.pair(p[2]);
-      c.font = R.font(fs);
-      var tw = c.measureText(txt).width + fs * 1.2, pt = 7 * z;
+      c.font = R.font(fs, false, CW);
+      var tw = c.measureText(txt).width + fs * 1.3, pt = 6 * z;
       var lx = p[0], ly = p[1] - lift - pt - 6 * z - th / 2, av = R.avoid;
       /* slide clear of the ruler's buttons; the pointer still finds the point */
       if (av && ly + th / 2 > av.t && ly - th / 2 < av.b && lx - tw / 2 < av.r && lx + tw / 2 > av.l)
         lx = av.r + tw / 2 + 6;
       var px = CG.clamp(p[0], lx - tw / 2 + th * 0.5, lx + tw / 2 - th * 0.5);
       c.save();
-      c.shadowColor = 'rgba(60,10,110,0.3)'; c.shadowBlur = 10; c.shadowOffsetY = 3;
+      c.shadowColor = 'rgba(60,10,110,0.16)'; c.shadowBlur = 8; c.shadowOffsetY = 2;
       R.roundRect(lx - tw / 2, ly - th / 2, tw, th, th / 2);
       c.fillStyle = '#FFFFFF'; c.fill();
       c.restore();
@@ -3191,13 +3193,13 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       c.moveTo(px - pt * 1.1, ly + th / 2 - 2); c.lineTo(p[0], ly + th / 2 + pt); c.lineTo(px + pt * 1.1, ly + th / 2 - 2);
       c.closePath();
       c.fillStyle = '#FFFFFF'; c.fill();
-      c.lineJoin = 'round'; c.lineWidth = 3; c.strokeStyle = PT_COL; c.stroke();
+      c.lineJoin = 'round'; c.lineWidth = 1.75; c.strokeStyle = PT_COL; c.stroke();
       R.roundRect(lx - tw / 2, ly - th / 2, tw, th, th / 2);
       c.fillStyle = '#FFFFFF'; c.fill();
-      c.lineWidth = 3; c.strokeStyle = PT_COL; c.stroke();
+      c.lineWidth = 1.75; c.strokeStyle = PT_COL; c.stroke();
       c.fillStyle = '#FFFFFF';                                   // join the pointer to the pill
-      c.fillRect(px - pt * 1.1 + 2, ly + th / 2 - 4, pt * 2.2 - 4, 4);
-      R.text(txt, lx, ly + 1, fs, '#3D1466', 'center', 0);
+      c.fillRect(px - pt * 1.1 + 1.5, ly + th / 2 - 3, pt * 2.2 - 3, 3);
+      R.text(txt, lx, ly + 1, fs, '#4A2380', 'center', 0, false, CW);
       c.restore();
     });
     c.restore();
@@ -3240,7 +3242,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     c.fillRect(-L / 2 + 2, 1, L - 4, 2);
     if (label) {
       c.rotate(-pose.ang);
-      haloText(label, 0, -24, 21, '#FFFFFF', 'center', 'rgba(27,42,94,0.9)');
+      haloText(label, 0, -24, 18, '#FFFFFF', 'center', 'rgba(27,42,94,0.7)');
     }
     c.restore();
   };
@@ -3426,13 +3428,13 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   R.INK = INK;
   R.FONT_UI = '"Nunito", "Trebuchet MS", system-ui, sans-serif';
   R.FONT_DISPLAY = '"Lilita One", "Nunito", "Trebuchet MS", system-ui, sans-serif';
-  R.font = function (size, display) {
-    return display ? size + 'px ' + R.FONT_DISPLAY : '900 ' + size + 'px ' + R.FONT_UI;
+  R.font = function (size, display, weight) {
+    return display ? size + 'px ' + R.FONT_DISPLAY : (weight || 900) + ' ' + size + 'px ' + R.FONT_UI;
   };
 
-  R.text = function (str, x, y, size, fill, align, outline, display) {
+  R.text = function (str, x, y, size, fill, align, outline, display, weight) {
     var c = R.ctx;
-    c.font = R.font(size, display);
+    c.font = R.font(size, display, weight);
     c.textAlign = align || 'left';
     c.textBaseline = 'middle';
     if (outline) {
@@ -4844,8 +4846,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       c.fillStyle = barGrad(ry, full, '#FFFFFF', '#EAF2FC'); c.fill();
       c.restore();
       R.roundRect(rx, ry, RULER_W, full, 12);
-      c.lineWidth = 3; c.strokeStyle = '#BFD3EA'; c.stroke();
-      c.fillStyle = 'rgba(31,107,255,0.08)'; c.fillRect(rx + 2, ry + 10, 14, full - 20);
+      c.lineWidth = 2; c.strokeStyle = '#C9DAEE'; c.stroke();
+      c.fillStyle = 'rgba(31,107,255,0.06)'; c.fillRect(rx + 2, ry + 10, 14, full - 20);
       for (i = 1; i <= N; i++) {
         var y = ry + 14 + (N - i) * step + step / 2, dead = !!q.wrong[i], cur = ru.cursor === i;
         if (cur && !dead) {
@@ -4869,8 +4871,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
         c.stroke();
         c.save();
         if (dead) c.globalAlpha = 0.35;
-        var ns = Math.min(21, step * 0.68);
-        R.text(String(i), rx + 16 + (RULER_W - 22) / 2, y + 1, ns, cur && !dead ? '#FFFFFF' : NAVY, 'center', 0);
+        var ns = Math.min(18, step * 0.6);
+        R.text(String(i), rx + 16 + (RULER_W - 22) / 2, y + 1, ns, cur && !dead ? '#FFFFFF' : NAVY, 'center', 0, false, R.CW);
         c.restore();
         if (dead) {
           c.lineCap = 'round'; c.strokeStyle = '#F0443A'; c.lineWidth = 3;
@@ -4883,22 +4885,22 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       c.beginPath(); c.moveTo(rx + RULER_W / 2 - 10, ry + full - 2); c.lineTo(rx + RULER_W / 2 + 10, ry + full - 2);
       c.lineTo(rx + RULER_W / 2, ry + full + 9); c.closePath();
       c.fillStyle = '#EAF2FC'; c.fill();
-      c.lineJoin = 'round'; c.lineWidth = 3; c.strokeStyle = '#BFD3EA'; c.stroke();
+      c.lineJoin = 'round'; c.lineWidth = 2; c.strokeStyle = '#C9DAEE'; c.stroke();
       c.restore();
     }
     /* value box: a white glass tile - a dashed slot while empty, the number once chosen */
     c.save();
-    R.roundRect(vx, top + 5, box, box, 13); c.fillStyle = '#9FB8D6'; c.fill();
+    R.roundRect(vx, top + 3, box, box, 13); c.fillStyle = '#B7CBE3'; c.fill();
     c.save();
-    c.shadowColor = 'rgba(20,40,110,0.3)'; c.shadowBlur = 10; c.shadowOffsetY = 5;
+    c.shadowColor = 'rgba(20,40,110,0.18)'; c.shadowBlur = 8; c.shadowOffsetY = 3;
     R.roundRect(vx, top, box, box, 13); c.fillStyle = barGrad(top, box, '#FFFFFF', '#E4EEFA'); c.fill();
     c.restore();
-    R.roundRect(vx, top, box, box, 13); c.lineWidth = 2.5; c.strokeStyle = '#C9DAEE'; c.stroke();
+    R.roundRect(vx, top, box, box, 13); c.lineWidth = 1.5; c.strokeStyle = '#D3E1F1'; c.stroke();
     var shown = ru.value || ru.cursor;
     if (shown) {
-      R.text(String(shown), vx + box / 2, top + box / 2 + 1, 28, ru.value ? BLUE : '#9DB0C8', 'center', 0);
+      R.text(String(shown), vx + box / 2, top + box / 2 + 1, 26, ru.value ? BLUE : '#9DB0C8', 'center', 0, false, R.CW);
     } else {
-      c.setLineDash([5, 4]); c.lineWidth = 2.5; c.strokeStyle = '#6F8FB8';
+      c.setLineDash([4, 4]); c.lineWidth = 1.75; c.strokeStyle = '#8AA4C6';
       R.roundRect(vx + 11, top + 11, box - 22, box - 22, 6); c.stroke();
       c.setLineDash([]);
     }
@@ -4908,24 +4910,24 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var pulse = ready || !ru.target ? 1 + 0.05 * Math.sin(G.time * 7 + q.t * 7) : 1;
     c.save();
     c.translate(gx + box / 2, top + box / 2); c.scale(pulse, pulse); c.translate(-(gx + box / 2), -(top + box / 2));
-    R.roundRect(gx, top + 5, box, box, 13); c.fillStyle = '#D9801A'; c.fill();
+    R.roundRect(gx, top + 3, box, box, 13); c.fillStyle = '#E39027'; c.fill();
     c.save();
-    c.shadowColor = 'rgba(120,60,0,0.35)'; c.shadowBlur = 10; c.shadowOffsetY = 5;
+    c.shadowColor = 'rgba(120,60,0,0.2)'; c.shadowBlur = 8; c.shadowOffsetY = 3;
     R.roundRect(gx, top, box, box, 13); c.fillStyle = barGrad(top, box, '#FFD968', '#FFAA24'); c.fill();
     c.restore();
-    R.roundRect(gx, top, box, box, 13); c.lineWidth = 2; c.strokeStyle = '#F29A1E'; c.stroke();
+    R.roundRect(gx, top, box, box, 13); c.lineWidth = 1.5; c.strokeStyle = '#F5A63A'; c.stroke();
     R.roundRect(gx + 7, top + 4, box - 14, box * 0.32, box * 0.16);
     c.fillStyle = 'rgba(255,255,255,0.38)'; c.fill();
     var cx = gx + box / 2, cy = top + box / 2 + 1;
     c.beginPath();
     if (!ru.target || ready) {                                 // play / go
-      c.moveTo(cx - 8, cy - 12); c.lineTo(cx + 13, cy); c.lineTo(cx - 8, cy + 12);
+      c.moveTo(cx - 7, cy - 10); c.lineTo(cx + 11, cy); c.lineTo(cx - 7, cy + 10);
     } else {                                                   // open, nothing picked: fold
       c.moveTo(cx - 12, cy - 6); c.lineTo(cx + 12, cy - 6); c.lineTo(cx, cy + 8);
     }
     c.closePath();
-    c.lineJoin = 'round'; c.lineWidth = 3; c.strokeStyle = '#5A3418'; c.stroke();
-    c.fillStyle = '#5A3418'; c.fill();
+    c.lineJoin = 'round'; c.lineWidth = 2; c.strokeStyle = '#6B4424'; c.stroke();
+    c.fillStyle = '#6B4424'; c.fill();
     c.restore();
     if (q.phase === 'ask') btn('rulopen', gx - 4, top - 4, box + 8, box + 8, 6);
   }
@@ -4941,41 +4943,41 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
          strip between the HUD card and the fuel bar; where that strip is too
          narrow (a phone) it drops below the buttons, beside the ruler. */
       var rulerRight = ra.x + RULER_BOX / 2 + RULER_W / 2 + 16;
-      var bandL = HUD_X + HUD_W + 14, bandR = W - 286, ty = 52, sh = 66;
-      if (bandR - bandL < 420) { bandL = Math.max(rulerRight, 16); bandR = W - 16; ty = 150; sh = 58; }
-      var pw = CG.clamp(bandR - bandL, 260, 640);
+      var bandL = HUD_X + HUD_W + 14, bandR = W - 286, ty = 50, sh = 58;
+      if (bandR - bandL < 420) { bandL = Math.max(rulerRight, 16); bandR = W - 16; ty = 150; sh = 52; }
+      var pw = CG.clamp(bandR - bandL, 260, 580);
       var tx = CG.clamp((gb.left + gb.right) / 2, bandL + pw / 2, Math.max(bandL + pw / 2, bandR - pw / 2));
       var drop = (1 - q.panel) * -30, py = ty + drop;
       R.glass(tx - pw / 2, py - sh / 2, pw, sh, sh / 2);
-      var ic = sh * 0.62, qs = Math.min(sh * 0.42, (pw - ic * 2.4 - 40) / 16.5);
-      c.font = R.font(qs);
+      var ic = sh * 0.58, qs = Math.min(sh * 0.37, (pw - ic * 2.4 - 40) / 16.5);
+      c.font = R.font(qs, false, R.CW);
       var qw = c.measureText('How many units should the plank be?').width;
       var gx0 = tx - (qw + ic * 1.9) / 2;
       R.rulerIcon(gx0 + ic * 0.4, py, ic);
       R.flick(gx0 + ic * 0.72, py + ic * 0.38, ic * 0.5, 1, 0.6);
-      R.text('How many units should the plank be?', gx0 + ic * 1.35, py + 1, qs, R.NAVY, 'left', 0);
+      R.text('How many units should the plank be?', gx0 + ic * 1.35, py + 1, qs, R.NAVY, 'left', 0, false, R.CW);
       R.flick(gx0 + ic * 1.35 + qw + ic * 0.08, py, ic * 0.62, 1);
       if (q.tries > 0) {
-        var bt = 'Try ' + (q.tries + 1), bs = 14;
-        c.font = R.font(bs);
+        var bt = 'Try ' + (q.tries + 1), bs = 13;
+        c.font = R.font(bs, false, R.CW);
         var bw = c.measureText(bt).width + 22, bxp = tx + pw / 2 - bw / 2 - 18, byp = py + sh / 2;
         R.roundRect(bxp - bw / 2, byp - 12, bw, 24, 12);
         c.fillStyle = barGrad(byp - 12, 24, '#FFC04D', '#FF8A1F'); c.fill();
-        c.lineWidth = 2.5; c.strokeStyle = '#FFFFFF'; c.stroke();
-        R.text(bt, bxp, byp + 1, bs, '#FFFFFF', 'center', 0);
+        c.lineWidth = 1.5; c.strokeStyle = '#FFFFFF'; c.stroke();
+        R.text(bt, bxp, byp + 1, bs, '#FFFFFF', 'center', 0, false, R.CW);
       }
       if (q.hint) {
-        var hs = Math.min(18, pw / 28), hy = H - 62 - hs * 1.15;   // just above the tip, clear of the grid's top
+        var hs = Math.min(16, pw / 30), hy = H - 62 - hs * 1.15;   // just above the tip, clear of the grid's top
         var X = R.X_COL, Y = R.Y_COL, Nv = R.NAVY;
         var hp = qq.dy === 0
           ? [['same height — just count across: ', Nv], [String(qq.dx), X]]
           : [[String(qq.dx), X], [' across, ', Nv], [String(qq.dy), Y], [g.b[1] > g.a[1] ? ' up' : ' down', Nv],
              ['   →   √(', Nv], [String(qq.dx), X], ['² + ', Nv], [String(qq.dy), Y], ['²)', Nv]];
-        c.font = R.font(hs);
+        c.font = R.font(hs, false, R.CW);
         var hw = 0; hp.forEach(function (t) { hw += c.measureText(t[0]).width; });
         var lw = hs * 3.4, cw = Math.min(W - 32, hw + lw + hs * 2.2), cx0 = CG.clamp(tx, cw / 2 + 16, W - cw / 2 - 16);
         R.glass(cx0 - cw / 2, hy - hs * 1.2, cw, hs * 2.4, hs * 1.2);
-        R.text('Hint', cx0 - cw / 2 + hs * 1.1, hy + 1, hs, '#F08A00', 'left', 0);
+        R.text('Hint', cx0 - cw / 2 + hs * 1.1, hy + 1, hs, '#F08A00', 'left', 0, false, R.CW);
         R.textRun(hp, cx0 + lw / 2, hy + 1, hs);
       }
       var ru = q.ruler;
@@ -4988,10 +4990,10 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       if (q.rulerIn > 0.01) {
         c.save();
         c.globalAlpha = q.rulerIn;
-        c.font = R.font(17);
-        var tw2 = c.measureText(tip).width + 44;
-        R.glass(W / 2 - tw2 / 2, H - 50, tw2, 38, 19, { edgeW: 2.5 });
-        R.text(tip, W / 2, H - 30, 17, R.NAVY, 'center', 0);
+        c.font = R.font(15, false, R.CW);
+        var tw2 = c.measureText(tip).width + 40;
+        R.glass(W / 2 - tw2 / 2, H - 46, tw2, 34, 17, { edgeW: 1.5 });
+        R.text(tip, W / 2, H - 28, 15, R.NAVY, 'center', 0, false, R.CW);
         drawRuler(q);
         c.restore();
       }
