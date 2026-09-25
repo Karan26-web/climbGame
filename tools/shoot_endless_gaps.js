@@ -47,6 +47,8 @@ function assert(cond, msg) { if (!cond) throw new Error('FAILED: ' + msg); conso
 
   assert(await page.evaluate(() => CG.Game.mode === 'endless'), 'starts in endless mode');
   assert(await page.evaluate(() => CG.Game.track === null), 'no stage track is set');
+  assert(await page.evaluate(() => CG.Game.freePlay && CG.Endless.chasms.length === 0),
+         'opens in free play, with no chasm laid yet');
 
   const shot = async (name) => { await page.screenshot({ path: path.join(out, name + '.png') }); console.log('shot', name); };
   const waitPhase = (p, ms) => page.waitForFunction(
@@ -73,8 +75,8 @@ function assert(cond, msg) { if (!cond) throw new Error('FAILED: ' + msg); conso
   }
 
   /* ---- chasm 1: the stop, then the reveal beat by beat ---- */
-  await gas(true);
-  await waitPhase('ask', 40000);
+  await gas(true);                     // free play (15s+), then the first gap ~3000px on
+  await waitPhase('ask', 70000);
   await gas(false);
   await shot('e0_stopped');            // the car alone on the lip, nothing up yet
   await page.waitForTimeout(650);
