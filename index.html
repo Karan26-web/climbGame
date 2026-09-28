@@ -1730,8 +1730,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       /* ---- chasm dressing: three coins on the far side as the reason to get
          across - placed past the edge of the question's frame, so they are
          found on the way out rather than competing with the plotted points.
-         The warning sign and the rocks on each lip are gone: the "Gap ahead"
-         pill does the sign's job, and the rocks sat right behind the points.
+         The warning sign and the rocks on each lip are gone: the auto-brake
+         and the push-in announce the gap, and the rocks sat right behind the
+         points.
          Shared by stage (tr.chasms) and endless (CG.Endless). ---- */
       function dressChasm(g) {
         var i2, px2;
@@ -2410,13 +2411,36 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     if (k <= 0.002 || R.quality < 0.9) return;
     var c = R.ctx, d = Math.hypot(R.W, R.H) * 1.9;
     c.save();
+    if (R.sheet) outsideSheet(c, R.sheet);         // it frames the sheet, never dims it
     c.globalAlpha = 0.5 * k;
     c.drawImage(vignetteImage(), cx - d / 2, cy - d / 2, d, d);
     c.restore();
   };
 
+  /* The worksheet does not take the world's light: while a question is up
+     the hour's grade and the vignette stay off the sheet (R.sheet, set by
+     drawGrid), so it stays true cream at dusk and at midnight. The clear
+     fades with the focus, so by the time the truck drives across the plank
+     the whole screen is graded alike again. */
+  function sheetPath(c, sh) { R.roundRect(sh.l, sh.t, sh.w, sh.h, sh.r); }
+  function outsideSheet(c, sh) {
+    c.beginPath(); c.rect(-40, -40, R.W + 80, R.H + 80);
+    c.moveTo(sh.l + sh.r, sh.t); c.arcTo(sh.l, sh.t, sh.l, sh.t + sh.h, sh.r);
+    c.arcTo(sh.l, sh.t + sh.h, sh.l + sh.w, sh.t + sh.h, sh.r);
+    c.arcTo(sh.l + sh.w, sh.t + sh.h, sh.l + sh.w, sh.t, sh.r);
+    c.arcTo(sh.l + sh.w, sh.t, sh.l, sh.t, sh.r); c.closePath();
+    c.clip('evenodd');
+  }
   R.drawGrade = function () {
-    var c = R.ctx, E = CG.Env, W = R.W, H = R.H;
+    var c = R.ctx, sh = R.sheet, clear = sh ? sh.clear : 0;
+    if (clear <= 0.01) { gradePaint(c); return; }
+    c.save(); outsideSheet(c, sh); gradePaint(c); c.restore();
+    if (clear < 0.99) {
+      c.save(); sheetPath(c, sh); c.clip(); c.globalAlpha = 1 - clear; gradePaint(c); c.restore();
+    }
+  };
+  function gradePaint(c) {
+    var E = CG.Env, W = R.W, H = R.H;
     var gk = 1 - 0.7 * (R.focus || 0);             // see FOCUS above
     var wx = E.wx * gk, rain = E.weather === 'rain' ? wx : 0;
     var fog = E.weather === 'fog' ? wx : 0, snow = E.weather === 'snow' ? wx : 0;
@@ -2442,7 +2466,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       c.fillRect(0, 0, W, H);
     }
     c.restore();
-  };
+  }
 
   /* ---------------------------------------------------------------- weather
      Screen-space, and cheap: rain is a few hundred short lines slanted by the
@@ -2967,31 +2991,36 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   };
 
   /* THE COORDINATE PLANE - the hero of the question, so it is drawn OVER the
-     world rather than tucked behind the ground: the whole grid reads,
-     including the rows that run down into the pit, and the terrain inside
-     the frame is frosted back to a pale ground the lines sit on. Only the
-     things that belong in front of it are drawn later: the plank, the two
-     points and the truck.
+     world rather than tucked behind the ground. Kept deliberately plain, like
+     a worksheet: a sheet of cream graph paper, one pale-blue rule per whole
+     unit and nothing between them, navy axes, navy numbers. Everything that
+     is not the grid stays quiet, so the two gold points and the dashed span
+     between them are what the eye finds.
 
-       frame   a white border with a soft sky-blue glow, so the plane lifts
-               off whatever scenery is behind it
-       paper   frosted blue glass; white rules every unit, fainter ones
-               every half unit to count along
-       axes    thick orange x and blue y on a white edge, an arrowhead and
-               a lettered tile at the positive end of each, a tick and a
-               number at every whole unit (every second one when units get
-               too small to hold a number)
-     `alpha` fades the glass in, `axisAlpha` the axes a beat later - see the
+       sheet   warm cream at 80% (94% at night), on a soft shadow and a hairline edge -
+               solid enough to read the same over any sky, season or hour,
+               see-through enough that the world stays behind it
+       ground  the terrain's own profile traced across the sheet as a green
+               line, so the hole the plank has to span is the one gap in it
+       grid    a single pale-blue rule every whole unit
+       axes    navy, an arrowhead and a letter at the positive end of each,
+               a tick and a number at every whole unit (every second or
+               fifth once units get too small to hold a number)
+     `alpha` fades the panel in, `axisAlpha` the axes a beat later - see the
      reveal in gapControl. */
   /* The plane holds perfectly still while the player thinks - which is
-     most of the time it is on screen - and it is the most expensive thing
-     in the frame (the rules, the glow, two dozen haloed numbers: ~2.7 ms in
-     software raster). So once it has been identical for two frames it is
+     most of the time it is on screen - and it is a full-panel fill, a rule
+     per unit, a traced ground line and a couple of dozen numbers. So once it
+     has been identical for two frames it is
      baked, cropped to its own bounds, into an offscreen bitmap and blitted
      until anything that shapes it changes. */
   var plane = { cv: null, key: '', prev: '', x: 0, y: 0, w: 0, h: 0 };
   R.drawGrid = function (gap, alpha, axisAlpha) {
+    R.sheet = null;
     if (!gap || alpha <= 0.01) return;
+    var sb = R.gridBox(gap);
+    R.sheet = { l: sb.left, t: sb.top, w: sb.right - sb.left, h: sb.bottom - sb.top, r: 16 * R.cam.z,
+                clear: Math.min(alpha, R.focus || 0) };
     var aa = axisAlpha === undefined ? 1 : axisAlpha, av = R.avoid;
     var key = [R.cam.x.toFixed(2), R.cam.y.toFixed(2), R.cam.z.toFixed(4), R.W, R.H, R.scale.toFixed(4),
                R.ox, R.oy, alpha.toFixed(3), aa.toFixed(3), R.legsUp ? 1 : 0, gap.padR || 0,
@@ -3019,102 +3048,114 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     c.drawImage(cv, plane.x, plane.y, plane.w, plane.h);
   };
 
+  /* Graph paper: warm cream, pale-blue rules, navy ink - the look of a
+     worksheet, so the maths reads as maths against the painted world. */
+  /* A little see-through, so the world - and the hole - still reads behind
+     it. It firms up after dark: the sheet keeps the night's grade off itself
+     (see R.drawGrade), and seen through it the ungraded world would glow
+     like a window onto daytime. */
+  var GRID_LINE = 'rgba(140,182,220,0.6)';
+  function paper() { return 'rgba(251,246,236,' + (0.8 + 0.14 * (CG.Env.night || 0)).toFixed(3) + ')'; }
+  var INK_NAVY = '#1E2A5A', AXIS_COL = INK_NAVY, NUM_COL = INK_NAVY;
+  R.INK_NAVY = INK_NAVY;
+  var GROUND_LINE = 'rgba(104,160,72,0.9)';
+
   function drawPlane(gap, alpha, axisAlpha) {
     var c = R.ctx, z = R.cam.z, U = CG.UNIT, b = R.gridBox(gap);
     var left = b.left, right = b.right, top = b.top, bottom = b.bottom, i, x, y;
-    var rad = 24 * z, w = right - left, h = bottom - top;
+    var rad = 16 * z, w = right - left, h = bottom - top, unitPx = U * z;
     c.save();
     c.globalAlpha = alpha;
-    /* paper */
+    /* the sheet, lifted off the world on a soft shadow (two offset fills,
+       not a blur: the plane redraws every frame while the camera moves) -
+       kept outside the sheet, which would otherwise show it through */
+    c.save();
+    outsideSheet(c, { l: left, t: top, w: w, h: h, r: rad });
+    R.roundRect(left, top + 6, w, h, rad); c.fillStyle = 'rgba(20,30,70,0.12)'; c.fill();
+    R.roundRect(left, top + 2, w, h, rad); c.fillStyle = 'rgba(20,30,70,0.12)'; c.fill();
+    c.restore();
     R.roundRect(left, top, w, h, rad);
-    var pg = c.createLinearGradient(0, top, 0, bottom);
-    pg.addColorStop(0, 'rgba(226,241,255,0.5)');
-    pg.addColorStop(1, 'rgba(198,224,255,0.44)');
-    c.fillStyle = pg; c.fill();
+    c.fillStyle = paper(); c.fill();
     c.save();
     R.roundRect(left, top, w, h, rad); c.clip();
-    var unitPx = U * z;
-    for (var pass = 0; pass < 2; pass++) {          // half units, then whole units over them
-      if (pass === 0 && unitPx < 40) continue;      // no half rules once a unit is small
-      c.lineWidth = pass ? 1.5 : 1;
-      c.strokeStyle = pass ? 'rgba(255,255,255,0.78)' : 'rgba(255,255,255,0.3)';
-      c.beginPath();
-      for (i = b.minGX - 1; i <= b.maxGX + 1; i++) {
-        x = Math.round(R.sx(gap.ox + (pass ? i : i + 0.5) * U)) + 0.5;
-        c.moveTo(x, top); c.lineTo(x, bottom);
-      }
-      for (i = b.minGY - 1; i <= b.maxGY + 1; i++) {
-        y = Math.round(R.sy(gap.oy - (pass ? i : i + 0.5) * U)) + 0.5;
-        c.moveTo(left, y); c.lineTo(right, y);
-      }
-      c.stroke();
+    /* grid: one rule per whole unit */
+    c.lineWidth = 1; c.strokeStyle = GRID_LINE;
+    c.beginPath();
+    for (i = b.minGX - 1; i <= b.maxGX + 1; i++) {
+      x = Math.round(R.sx(gap.ox + i * U)) + 0.5;
+      c.moveTo(x, top); c.lineTo(x, bottom);
     }
-    var sh = c.createLinearGradient(0, top, 0, top + 110 * z);     // a sheen across the top of the glass
-    sh.addColorStop(0, 'rgba(255,255,255,0.32)'); sh.addColorStop(1, 'rgba(255,255,255,0)');
-    c.fillStyle = sh; c.fillRect(left, top, w, 110 * z);
+    for (i = b.minGY - 1; i <= b.maxGY + 1; i++) {
+      y = Math.round(R.sy(gap.oy - i * U)) + 0.5;
+      c.moveTo(left, y); c.lineTo(right, y);
+    }
+    c.stroke();
+    /* the ground, traced as a green line, so the hollow reads as the one
+       gap in it (the real ground shows faintly through the sheet) */
+    var T = CG.Terrain, step = 4, wx0 = R.cam.x + (left - R.W / 2) / z;
+    c.beginPath();
+    for (x = left; x <= right + step; x += step) {
+      var gy = R.sy(T.ground(wx0 + (x - left) / z));
+      if (x === left) c.moveTo(x, gy); else c.lineTo(x, gy);
+    }
+    c.lineJoin = 'round';
+    c.lineWidth = 2.5; c.strokeStyle = GROUND_LINE; c.stroke();
     c.restore();
-    /* frame: glow, then the white border */
+    /* edge: one hairline, the sheet's own border */
     R.roundRect(left, top, w, h, rad);
-    c.lineWidth = 16; c.strokeStyle = 'rgba(150,210,255,0.18)'; c.stroke();
-    c.lineWidth = 9; c.strokeStyle = 'rgba(205,236,255,0.38)'; c.stroke();
-    c.lineWidth = 4; c.strokeStyle = 'rgba(255,255,255,0.96)'; c.stroke();
+    c.lineWidth = 1.5; c.strokeStyle = 'rgba(30,42,90,0.14)'; c.stroke();
+    c.lineCap = 'butt';
 
     var aa = axisAlpha === undefined ? 1 : axisAlpha;
     if (aa <= 0.01) { c.restore(); return; }
     c.globalAlpha = alpha * aa;
     var ax = R.sx(gap.ox), ay = R.sy(gap.oy);
     var rpx = 1 / (R.cssK || 1);                    // design px per real px
-    var fs = CG.clamp(17 * z, Math.max(13, 12 * rpx), Math.max(21, 12 * rpx)), aw = CG.clamp(5 * z, 4, 6.5);
-    var arrow = CG.clamp(18 * z, 13, 22), tick = CG.clamp(7 * z, 5, 9), tile = fs * 1.9;
+    var fs = CG.clamp(17 * z, Math.max(13, 12 * rpx), Math.max(21, 12 * rpx));
+    var aw = CG.clamp(2.6 * z, 2.2, 3.2), arrow = CG.clamp(14 * z, 11, 17), tick = CG.clamp(6 * z, 5, 8);
     /* a number at every unit while they fit side by side, else every
        second, else every fifth */
     var every = unitPx >= fs * 1.9 ? 1 : unitPx * 2 >= fs * 1.9 ? 2 : 5;
-    var xL = left + 3, xR = right - tile - arrow - 10;            // leave the letter tile inside the frame
-    var yB = bottom - 3, yT = top + arrow + 8;
-    function axisLine(x0, y0, x1, y1, col) {
-      c.lineCap = 'round';
-      c.lineWidth = aw + 3.5; c.strokeStyle = 'rgba(255,255,255,0.9)';
-      c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.stroke();
-      c.lineWidth = aw; c.strokeStyle = col;
-      c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.stroke();
-    }
-    function arrowHead(x0, y0, dx, dy, col) {
-      c.beginPath();
-      c.moveTo(x0 + dx * arrow, y0 + dy * arrow);
-      c.lineTo(x0 - dy * arrow * 0.62, y0 + dx * arrow * 0.62);
-      c.lineTo(x0 + dy * arrow * 0.62, y0 - dx * arrow * 0.62);
-      c.closePath();
-      c.lineJoin = 'round'; c.lineWidth = 3.5; c.strokeStyle = 'rgba(255,255,255,0.9)'; c.stroke();
-      c.fillStyle = col; c.fill();
-    }
+    var xL = left + 6, xR = right - arrow - fs * 1.4, yB = bottom - 6, yT = top + arrow + fs * 0.6;
     var showX = ay > top + 4 && ay < bottom - 4, showY = ax > left + 4 && ax < right - 4;
-    if (showX) { axisLine(xL, ay, xR, ay, X_COL); arrowHead(xR, ay, 1, 0, X_COL); }
-    if (showY) { axisLine(ax, yB, ax, yT, Y_COL); arrowHead(ax, yT, 0, -1, Y_COL); }
-    /* ticks at every whole unit */
-    c.lineCap = 'round'; c.lineWidth = CG.clamp(2.6 * z, 2, 3.2);
-    if (showX) {
-      c.strokeStyle = X_COL; c.beginPath();
-      for (i = b.minGX; i <= b.maxGX; i++) {
-        x = R.sx(gap.ox + i * U);
-        if (i === 0 || x < xL + 4 || x > xR - 4) continue;
-        c.moveTo(x, ay - tick); c.lineTo(x, ay + tick);
-      }
-      c.stroke();
+    /* axes, ticks and arrowheads, all one white */
+    c.strokeStyle = AXIS_COL; c.fillStyle = AXIS_COL; c.lineCap = 'round';
+    c.lineWidth = aw;
+    c.beginPath();
+    if (showX) { c.moveTo(xL, ay); c.lineTo(xR, ay); }
+    if (showY) { c.moveTo(ax, yB); c.lineTo(ax, yT); }
+    c.stroke();
+    c.lineWidth = Math.max(1.5, aw * 0.75);
+    c.beginPath();
+    if (showX) for (i = b.minGX; i <= b.maxGX; i++) {
+      x = R.sx(gap.ox + i * U);
+      if (i === 0 || x < xL + 4 || x > xR - arrow) continue;
+      c.moveTo(x, ay - tick); c.lineTo(x, ay + tick);
     }
-    if (showY) {
-      c.strokeStyle = Y_COL; c.beginPath();
-      for (i = b.minGY; i <= b.maxGY; i++) {
-        y = R.sy(gap.oy - i * U);
-        if (i === 0 || y < yT + 4 || y > yB - 4) continue;
-        c.moveTo(ax - tick, y); c.lineTo(ax + tick, y);
-      }
-      c.stroke();
+    if (showY) for (i = b.minGY; i <= b.maxGY; i++) {
+      y = R.sy(gap.oy - i * U);
+      if (i === 0 || y < yT + arrow || y > yB - 4) continue;
+      c.moveTo(ax - tick, y); c.lineTo(ax + tick, y);
     }
+    c.stroke();
     c.lineCap = 'butt';
-    /* Numbers, navy on a white halo. One that would print under a point's
-       label, or on the point, is left out: the label already says it. With
-       both points below the x-axis the x numbers go above it, where the
-       labels are not. */
+    function arrowHead(x0, y0, dx, dy) {
+      c.beginPath();
+      c.moveTo(x0 + dx * arrow * 0.5, y0 + dy * arrow * 0.5);
+      c.lineTo(x0 - dx * arrow * 0.5 - dy * arrow * 0.45, y0 - dy * arrow * 0.5 + dx * arrow * 0.45);
+      c.lineTo(x0 - dx * arrow * 0.5 + dy * arrow * 0.45, y0 - dy * arrow * 0.5 - dx * arrow * 0.45);
+      c.closePath(); c.fill();
+    }
+    if (showX) arrowHead(xR, ay, 1, 0);
+    if (showY) arrowHead(ax, yT, 0, -1);
+    c.font = R.font(fs * 1.3, false, 800);
+    c.textBaseline = 'middle';
+    if (showX) { c.textAlign = 'left'; c.fillText('x', xR + arrow * 0.7, ay - fs * 0.05); }
+    if (showY) { c.textAlign = 'left'; c.fillText('y', ax + fs * 0.55, yT - arrow * 0.15); }
+    /* Numbers. One that would print under a point's label, on a point, on
+       the hint's leg numbers or on the dashed span is left out: the thing
+       over it already says it. With both points below the x-axis the x
+       numbers go above it, where the labels are not. */
     var boxes = [R.labelBox(gap, 'a'), R.labelBox(gap, 'b')];
     var legBoxes = R.legsUp ? R.legLabels(gap) : [];
     var sax = R.sx(gap.ax), say = R.sy(gap.ay), sbx = R.sx(gap.bx), sby = R.sy(gap.by);
@@ -3124,52 +3165,37 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
         if (Math.abs(cx - q.x) < hw + q.w / 2 + 4 && Math.abs(cy - q.y) < hh + q.h / 2 + 4) return false;
         if (Math.abs(cx - q.px) < hw + q.r + 6 && Math.abs(cy - q.py) < hh + q.r + 6) return false;
       }
-      for (n = 0; n < legBoxes.length; n++) {        // ...and the hint's leg numbers
+      for (n = 0; n < legBoxes.length; n++) {
         var lq = legBoxes[n];
         if (Math.abs(cx - lq.x) < hw + lq.w / 2 + 4 && Math.abs(cy - lq.y) < hh + lq.h / 2 + 2) return false;
       }
-      /* ...and off the dashed measuring segment, which is drawn over them */
       var dx = sbx - sax, dy = sby - say, L2 = dx * dx + dy * dy || 1;
       var t = CG.clamp(((cx - sax) * dx + (cy - say) * dy) / L2, 0, 1);
-      var ex = Math.abs(cx - (sax + dx * t)), ey = Math.abs(cy - (say + dy * t));
-      if (ex < hw + 5 && ey < hh + 5) return false;
+      if (Math.abs(cx - (sax + dx * t)) < hw + 5 && Math.abs(cy - (say + dy * t)) < hh + 5) return false;
       return true;
     }
     var above = Math.max(gap.a[1], gap.b[1]) < 0;
-    c.font = R.font(fs, false, 800);
+    c.font = R.font(fs, false, 700);
+    c.fillStyle = NUM_COL;
+    c.textAlign = 'center';
     if (showX) for (i = b.minGX; i <= b.maxGX; i++) {
       if (i % every) continue;
       x = R.sx(gap.ox + i * U);
-      if (x < xL + 6 || x > xR - 4) continue;
-      var lbl = R.coord(i), ly = above ? ay - tick - fs * 0.85 : ay + tick + fs * 0.85;
-      var lx = i === 0 && showY ? x + fs * 0.45 : x;               // 0 sits just right of the y-axis
+      if (x < xL + 6 || x > xR - arrow) continue;
+      var lbl = R.coord(i), ly = above ? ay - tick - fs * 0.8 : ay + tick + fs * 0.8;
+      var lx = i === 0 && showY ? x - fs * 0.5 : x;                // 0 tucks in left of the y-axis
       if (!clearOfLabels(lx, ly, c.measureText(lbl).width / 2 + 2, fs * 0.55)) continue;
-      numText(lbl, lx, ly, 'center');
+      c.fillText(lbl, lx, ly);
     }
+    c.textAlign = 'right';
     if (showY) for (i = b.minGY; i <= b.maxGY; i++) {
       if (i === 0 || i % every) continue;
       y = R.sy(gap.oy - i * U);
-      if (y < yT + 6 || y > yB - 6) continue;
+      if (y < yT + arrow || y > yB - 6) continue;
       var yl = R.coord(i), yw = c.measureText(yl).width;
       if (!clearOfLabels(ax - tick - fs * 0.4 - yw / 2, y, yw / 2 + 2, fs * 0.55)) continue;
-      numText(yl, ax - tick - fs * 0.4, y, 'right');
+      c.fillText(yl, ax - tick - fs * 0.4, y);
     }
-    function numText(str, tx, ty, align) {
-      c.textAlign = align; c.textBaseline = 'middle';
-      c.lineJoin = 'round'; c.lineWidth = Math.max(3, fs * 0.28); c.strokeStyle = 'rgba(255,255,255,0.95)';
-      c.strokeText(str, tx, ty);
-      c.fillStyle = NAVY; c.fillText(str, tx, ty);
-    }
-    /* the axis letters, on white tiles at the arrow tips */
-    function badge(txt, bx, by, col) {
-      R.roundRect(bx - tile / 2, by - tile / 2 + 3, tile, tile, tile * 0.28);
-      c.fillStyle = 'rgba(20,40,110,0.18)'; c.fill();
-      R.roundRect(bx - tile / 2, by - tile / 2, tile, tile, tile * 0.28);
-      c.fillStyle = '#FFFFFF'; c.fill();
-      R.text(txt, bx, by - fs * 0.06, fs * 1.35, col, 'center', 0, false, 900);
-    }
-    if (showX) badge('x', xR + arrow + tile * 0.62, ay - tile * 0.62, X_COL);
-    if (showY) badge('y', ax + tile * 0.9, yT + tile * 0.1, Y_COL);
     c.restore();
   }
 
@@ -3306,32 +3332,45 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   /* The two plotted points, their labels and (when `legs`) the right
      triangle under the hypotenuse with its legs measured — the hint. Drawn in
      front of the terrain: these must never be hidden. */
-  /* Where a plotted point's speech bubble sits on screen. Like the
-     reference, a bubble rides up and to the RIGHT of its point, its tail
-     dropping from the lower-left corner onto the point; one that would cross
-     the plane's right edge flips to the left instead. It also slides clear
-     of the ruler's buttons (R.avoid). Shared with the axis numbers, which
-     step aside for it rather than print under it. */
-  var PT_R = 12, LBL_FS = 21;
+  /* Where a plotted point's label sits on screen: plain white text beside
+     its point, as in a textbook. Up-right is the first choice; the label
+     takes whichever of the four diagonal spots is clearest - off the dashed
+     span (an uphill span leaves A exactly up-right), off the ruler's
+     buttons, off the axes, off the other point, inside the panel. Shared
+     with the axis numbers, which step aside for it. */
+  var PT_R = 10, LBL_FS = 21;
   R.labelBox = function (gap, which) {
     var c = R.ctx, z = R.cam.z, pt = gap[which];
     var px = R.sx(which === 'a' ? gap.ax : gap.bx), py = R.sy(which === 'a' ? gap.ay : gap.by);
+    var qx = R.sx(which === 'a' ? gap.bx : gap.ax), qy = R.sy(which === 'a' ? gap.by : gap.ay);
     var rpx = 1 / (R.cssK || 1);                    // floors in real pixels, for phones
-    var r = CG.clamp(PT_R * z, Math.max(9, 7 * rpx), Math.max(15, 7 * rpx));
-    var fs = CG.clamp(LBL_FS * z, Math.max(15, 13 * rpx), Math.max(26, 13 * rpx)), th = fs * 1.72;
-    var tip = CG.clamp(11 * z, 8, 13), gapY = r + 5;
+    var r = CG.clamp(PT_R * z, Math.max(8, 6 * rpx), Math.max(13, 6 * rpx));
+    var fs = CG.clamp(LBL_FS * z, Math.max(15, 13 * rpx), Math.max(26, 13 * rpx)), th = fs * 1.2;
     c.font = R.font(fs, false, 800);
-    var tw = c.measureText(R.pair(pt)).width + fs * 1.25;
-    var inset = th * 0.42;                               // where the tail leaves the bubble
-    var ly = py - gapY - tip - th / 2;
-    var lx = px - inset + tw / 2, flip = false;
-    var edge = R.gridBox(gap).right - 10;
-    if (lx + tw / 2 > edge) { lx = px + inset - tw / 2; flip = true; }
-    var av = R.avoid;
-    if (av && ly + th / 2 > av.t && ly - th / 2 < av.b && lx - tw / 2 < av.r && lx + tw / 2 > av.l)
-      lx = av.r + tw / 2 + 6;
-    return { x: lx, y: ly, w: tw, h: th, fs: fs, r: r, tip: tip, gapY: gapY, flip: flip,
-             inset: inset, px: px, py: py };
+    var tw = c.measureText(R.pair(pt)).width, off = r + fs * 0.25, dy = r + fs * 0.75;
+    var gb = R.gridBox(gap), av = R.avoid, oax = R.sx(gap.ox), oay = R.sy(gap.oy);
+    function hits(x0, y0, x1, y1, l, t, rr, bb) {     // does the segment cross the box?
+      for (var k = 0; k <= 24; k++) {
+        var sx = x0 + (x1 - x0) * k / 24, sy = y0 + (y1 - y0) * k / 24;
+        if (sx > l && sx < rr && sy > t && sy < bb) return true;
+      }
+      return false;
+    }
+    var best = null, spots = [[1, -1], [-1, -1], [1, 1], [-1, 1]];
+    for (var n = 0; n < 4; n++) {
+      var sxn = spots[n][0], syn = spots[n][1];
+      var lx = px + sxn * (off + tw / 2), ly = py + syn * dy;
+      var l = lx - tw / 2 - 3, t = ly - th / 2 - 2, rr = lx + tw / 2 + 3, bb = ly + th / 2 + 2;
+      var cost = n * 0.5;                          // a mild preference for the order above
+      if (hits(px, py, qx, qy, l, t, rr, bb)) cost += 10;
+      if (av && bb > av.t && t < av.b && l < av.r && rr > av.l) cost += 8;
+      if (Math.abs(qx - lx) < tw / 2 + r + 4 && Math.abs(qy - ly) < th / 2 + r + 4) cost += 6;
+      if (l < gb.left + 4 || rr > gb.right - 4 || t < gb.top + 4 || bb > gb.bottom - 4) cost += 4;
+      if (oay > t && oay < bb) cost += 3;          // sitting on the x-axis
+      if (oax > l && oax < rr) cost += 2;          // ...or the y-axis
+      if (!best || cost < best.cost) best = { cost: cost, x: lx, y: ly };
+    }
+    return { x: best.x, y: best.y, w: tw, h: th, fs: fs, r: r, px: px, py: py };
   };
 
   /* Where the hint's two leg numbers sit (the across one above its leg, off
@@ -3353,40 +3392,35 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     return out;
   };
 
+  /* on the paper: an orange span, a blue up-leg, navy labels on a paper halo */
+  var SPAN_COL = '#F08A00', LEG_Y = '#2F6FE0', HALO_DARK = 'rgba(251,246,236,0.95)';
   R.drawGapPoints = function (gap, alpha, legs, bAlpha) {
     var aA = alpha, aB = bAlpha === undefined ? alpha : bAlpha;
     if (!gap || Math.max(aA, aB) <= 0.01) return;
     var c = R.ctx, z = R.cam.z;
     var ax = R.sx(gap.ax), ay = R.sy(gap.ay), bx = R.sx(gap.bx), by = R.sy(gap.by);
+    var rpx = 1 / (R.cssK || 1);
+    var lw = CG.clamp(3.5 * z, Math.max(3, 2.2 * rpx), Math.max(4.5, 2.2 * rpx));
+    var dash = [CG.clamp(12 * z, 9, 14) * Math.max(1, rpx * 0.6), CG.clamp(8 * z, 6, 10) * Math.max(1, rpx * 0.6)];
     c.save();
     c.globalAlpha = Math.min(aA, aB);
     c.lineCap = 'round';
-    /* One stroke on a white edge, so a line reads on the paper, on the axis
-       it may lie along, and on the pit alike. */
-    function edged(x0, y0, x1, y1, col, wdt, dash) {
-      c.setLineDash(dash || []);
-      c.lineWidth = wdt + 4; c.strokeStyle = 'rgba(255,255,255,0.92)';
-      c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.stroke();
-      c.lineWidth = wdt; c.strokeStyle = col;
-      c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.stroke();
-      c.setLineDash([]);
-    }
-    var dash = [CG.clamp(15 * z, 10, 18), CG.clamp(9 * z, 6, 11)], lw = CG.clamp(5.5 * z, 4, 7);
     if (legs) {
-      /* the hint: the right triangle under the plank's line - across in the
-         x orange, up in the y blue - each leg measured */
+      /* the hint: the right triangle under the plank's line - across in
+         orange, up in blue - each leg measured */
       var q = gap.q, cx = bx, cy = ay;              // the corner under B, level with A
-      edged(ax, ay, cx, cy, X_COL, lw * 0.8);
-      if (q.dy) edged(cx, cy, bx, by, Y_COL, lw * 0.8);
-      /* the across number above its leg (below sits on the ground), the up
-         number beside its leg - see R.legLabels */
+      c.lineWidth = lw * 0.85;
+      c.strokeStyle = SPAN_COL; c.beginPath(); c.moveTo(ax, ay); c.lineTo(cx, cy); c.stroke();
+      if (q.dy) { c.strokeStyle = LEG_Y; c.beginPath(); c.moveTo(cx, cy); c.lineTo(bx, by); c.stroke(); }
       var ll = R.legLabels(gap);
-      haloText(ll[0].t, ll[0].x, ll[0].y, ll[0].s, X_COL, 'center');
-      if (ll[1]) haloText(ll[1].t, ll[1].x, ll[1].y, ll[1].s, Y_COL, 'center');
+      haloText(ll[0].t, ll[0].x, ll[0].y, ll[0].s, SPAN_COL, 'center', HALO_DARK);
+      if (ll[1]) haloText(ll[1].t, ll[1].x, ll[1].y, ll[1].s, LEG_Y, 'center', HALO_DARK);
     }
-    /* THE SPAN TO MEASURE: a bold dashed line from point to point - the
-       plank's own line, which is what the question asks the length of */
-    edged(ax, ay, bx, by, '#FF8A00', lw, dash);
+    /* THE SPAN TO MEASURE: a dashed line from point to point - the plank's
+       own line, which is what the question asks the length of */
+    c.setLineDash(dash); c.lineWidth = lw; c.strokeStyle = SPAN_COL;
+    c.beginPath(); c.moveTo(ax, ay); c.lineTo(bx, by); c.stroke();
+    c.setLineDash([]);
     c.lineCap = 'butt';
 
     /* the two points land one after the other, each with a little bounce, so
@@ -3399,39 +3433,23 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       c.globalAlpha = p[3];
       var pop = 1 + 0.4 * Math.sin(Math.min(1, p[3]) * Math.PI);
       c.translate(p[0], p[1]); c.scale(pop, pop); c.translate(-p[0], -p[1]);
-      /* a glossy purple bead: a soft violet glow, a white ring, a highlight */
-      var gl = c.createRadialGradient(p[0], p[1], r * 0.6, p[0], p[1], r * 2.5);
-      gl.addColorStop(0, 'rgba(170,70,240,0.5)'); gl.addColorStop(1, 'rgba(170,70,240,0)');
-      c.fillStyle = gl; c.fillRect(p[0] - r * 2.5, p[1] - r * 2.5, r * 5, r * 5);
-      c.beginPath(); c.arc(p[0], p[1], r + 3, 0, CG.TAU);
+      /* a glowing gold bead on a white ring, like a star on the worksheet */
+      var gl = c.createRadialGradient(p[0], p[1], r * 0.5, p[0], p[1], r * 2.8);
+      gl.addColorStop(0, 'rgba(255,196,60,0.55)'); gl.addColorStop(1, 'rgba(255,196,60,0)');
+      c.fillStyle = gl; c.fillRect(p[0] - r * 2.8, p[1] - r * 2.8, r * 5.6, r * 5.6);
+      c.beginPath(); c.arc(p[0], p[1], r + 2.5, 0, CG.TAU);
       c.fillStyle = '#FFFFFF'; c.fill();
       c.beginPath(); c.arc(p[0], p[1], r, 0, CG.TAU);
-      var sg = c.createRadialGradient(p[0] - r * 0.4, p[1] - r * 0.45, r * 0.1, p[0], p[1], r);
-      sg.addColorStop(0, '#EBC2FF'); sg.addColorStop(0.45, '#A945E6'); sg.addColorStop(1, '#5E17A6');
+      var sg = c.createRadialGradient(p[0] - r * 0.35, p[1] - r * 0.4, r * 0.1, p[0], p[1], r);
+      sg.addColorStop(0, '#FFE9A3'); sg.addColorStop(1, '#F29B0C');
       c.fillStyle = sg; c.fill();
-      c.beginPath(); c.ellipse(p[0] - r * 0.3, p[1] - r * 0.42, r * 0.36, r * 0.21, -0.5, 0, CG.TAU);
-      c.fillStyle = 'rgba(255,255,255,0.8)'; c.fill();
-      /* its label: a white speech bubble in a thick purple rim, the tail
-         dropping from its lower corner onto the point */
-      var tw = lb.w, th = lb.h, lx = lb.x, ly = lb.y, bl = lx - tw / 2, bt = ly - th / 2;
-      var tbx = lb.flip ? bl + tw - lb.inset : bl + lb.inset;       // where the tail meets the bubble
-      tbx = CG.clamp(tbx, bl + th * 0.3, bl + tw - th * 0.3);
-      var tipX = p[0], tipY = p[1] - lb.gapY, tail = th * 0.26;
-      c.save();
-      R.roundRect(bl, bt + 3, tw, th, th / 2);                      // a soft drop
-      c.fillStyle = 'rgba(60,10,110,0.16)'; c.fill();
-      c.restore();
-      c.beginPath();                                                 // tail first, then the bubble over its root
-      c.moveTo(tbx - tail, bt + th - 2); c.lineTo(tipX, tipY); c.lineTo(tbx + tail, bt + th - 2);
-      c.closePath();
-      c.fillStyle = '#FFFFFF'; c.fill();
-      c.lineJoin = 'round'; c.lineWidth = 3; c.strokeStyle = PT_COL; c.stroke();
-      R.roundRect(bl, bt, tw, th, th / 2);
-      c.fillStyle = '#FFFFFF'; c.fill();
-      c.lineWidth = 3; c.strokeStyle = PT_COL; c.stroke();
-      c.fillStyle = '#FFFFFF';                                       // open the rim where the tail joins
-      c.fillRect(tbx - tail + 2.5, bt + th - 4, tail * 2 - 5, 5);
-      R.text(R.pair(p[2]), lx, ly + 1, lb.fs, '#3D1466', 'center', 0, false, 800);
+      /* its coordinates: navy ink, on a paper halo for the places it
+         crosses a grid line or the axis */
+      c.font = R.font(lb.fs, false, 800);
+      c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.lineJoin = 'round'; c.lineWidth = Math.max(3, lb.fs * 0.26); c.strokeStyle = HALO_DARK;
+      c.strokeText(R.pair(p[2]), lb.x, lb.y);
+      c.fillStyle = INK_NAVY; c.fillText(R.pair(p[2]), lb.x, lb.y);
       c.restore();
     });
     c.restore();
@@ -4090,16 +4108,16 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      once the player has had FREE_T seconds AND shown they can drive
      (FREE_DIST metres), or FREE_MAX seconds have passed regardless - and
      only while the truck is on its wheels, so it never arrives mid-tumble.
-     It then lands Endless.LEAD px ahead: a few seconds of "gap ahead" before
-     the auto-brake takes over. */
-  var FREE_T = 15, FREE_MAX = 30, FREE_DIST = 80, AHEAD_T = 4.5;
+     It then lands Endless.LEAD px ahead, a few seconds of driving before the
+     auto-brake takes over. No banner announces any of it: the open road is
+     the invitation, and the brake and the push-in announce the gap. */
+  var FREE_T = 15, FREE_MAX = 30, FREE_DIST = 80;
   function freePlayTick(v, dt) {
     G.freeT += dt;
     var drove = v.x / CG.PPM - G.freeX0 >= FREE_DIST;
     if (G.freeT < FREE_T || !(drove || G.freeT >= FREE_MAX)) return;
     if (!v.onGround || v.crashed || Math.abs(v.a) > 0.6) return;
     G.freePlay = false;
-    G.aheadT = AHEAD_T;
     CG.Endless.begin(v.x);
     A.sfx('check');
   }
@@ -4168,7 +4186,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     G.safety = 0; G.boostT = 0; G.deadT = 0; G.invuln = 0;
     G.reason = ''; G.newBest = false; G.stars = 0; G.wonStars = 0; G.winT = 0;
     G.progress = 0;
-    G.freePlay = G.mode === 'endless'; G.freeT = 0; G.freeX0 = x / CG.PPM; G.aheadT = 0;
+    G.freePlay = G.mode === 'endless'; G.freeT = 0; G.freeX0 = x / CG.PPM;
     CG.Env.reset(G.seed);
     lastSafeX = G.v.x; lastSafeT = 0;
     R.cam.x = G.v.x; R.cam.y = G.v.y; R.cam.z = 1;
@@ -4518,16 +4536,20 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
         if (q.t >= SPAWN_T) {
           var cu = q.cut, z = R.cam.z, L = Math.hypot(q.plank.x1 - q.plank.x0, q.plank.y1 - q.plank.y0);
           if (cu) {
-            q.pose0 = { x: R.cam.x + (cu.x - R.W / 2) / z, y: R.cam.y + (cu.top - R.H / 2) / z + (cu.bot - cu.top) / (2 * z) };
-            q.scale0 = CG.clamp((cu.bot - cu.top) / (L * z), 0.05, 3);
-            for (var d1 = 0; d1 < 4; d1++) FX.dust(q.pose0.x, q.pose0.y, -30, -20, 0.5);
+            /* the piece's centre on screen, back into the world; the plank
+               pose is its top edge, which on an upright piece is its left side */
+            q.pose0 = { x: R.cam.x + (cu.x - R.W / 2) / z, y: R.cam.y + (cu.y - R.H / 2) / z };
+            q.scale0 = CG.clamp(cu.len / (L * z), 0.05, 3);
+            q.tilt0 = cu.tilt;
           }
-          q.ruler.target = 0;                    // the ruler folds away behind the falling piece
+          /* the ruler stays open until the plank lands: it is where it came from */
           q.phase = 'place'; q.t = 0;
+          A.sfx('click');
         }
         return COAST;
       case 'place':
         if (q.t >= PLACE_T) landPlank();
+        else if (!q.whoosh && q.t > PLACE_T * 0.55) { q.whoosh = true; A.sfx('land'); }
         return COAST;
       case 'fail':
         q.fade = CG.clamp((q.t - (FAIL_T - FADE_T)) / FADE_T, 0, 1);
@@ -4554,7 +4576,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     /* fallback only: the real start is the strip cut from the ruler (q.cut,
        measured by drawRuler), taken when the piece comes free */
     q.pose0 = { x: G.v.x, y: G.v.y - 80 - L / 2 }; q.scale0 = 1; q.cut = null; q.snipped = false;
-    q.phase = 'spawn'; q.t = 0;
+    q.phase = 'spawn'; q.t = 0; q.whoosh = false; q.tilt0 = 0;
     A.sfx('click');
   };
 
@@ -4568,22 +4590,37 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     if (q.phase === 'spawn') {                  // still on the ruler - drawn there, not here
       return { x: q.pose0.x, y: q.pose0.y, ang: -Math.PI / 2, len: L, scale: q.scale0 || 1, alpha: 0 };
     }
-    if (q.phase === 'place') {
-      /* off the ruler: it tips over as it falls, grows to full size, and
-         arcs down onto the hole */
-      var kk = q.t / PLACE_T;
-      var kr = ease(kk / 0.7), ks = ease(kk), kz = ease(kk / 0.8);
-      return { x: CG.lerp(q.pose0.x, tx, ks), y: CG.lerp(q.pose0.y, ty, ks) - Math.sin(ks * Math.PI) * 60,
-               ang: CG.lerp(-Math.PI / 2, ang1, kr), len: L, scale: CG.lerp(q.scale0 || 1, 1, kz) };
-    }
+    if (q.phase === 'place') return fallPose(q, q.t, L, tx, ty, ang1);
     return { x: tx, y: ty, ang: ang1, len: L };
   }
   G.plankPose = plankPose;
+
+  /* ② THE FALL, as a pose at time t: it drops off the ruler under something
+     like gravity (a small hop out, then accelerating down), drifts across
+     to the hole fast at first and settling late, tips over clockwise to lie
+     flat a moment before it touches, and grows from the ruler's scale to
+     the real plank on the way. Every term lands exactly on the placed pose
+     at t = PLACE_T, so the hand-off to the terrain has no jump. */
+  var FALL_HOP = 46;
+  function fallPose(q, t, L, tx, ty, ang1) {
+    var k = CG.clamp(t / PLACE_T, 0, 1), p0 = q.pose0;
+    var kx = 1 - (1 - k) * (1 - k);
+    var y = p0.y + (ty - p0.y) * k * k - FALL_HOP * 4 * k * (1 - k) * (1 - k);
+    var a0 = -Math.PI / 2 + (q.tilt0 || 0);
+    return { x: CG.lerp(p0.x, tx, kx), y: y, ang: CG.lerp(a0, ang1, ease(k / 0.85)), len: L,
+             scale: CG.lerp(q.scale0 || 1, 1, ease(k / 0.75)) };
+  }
+  G.fallPose = function (t) {
+    var q = G.gap, p = q.plank;
+    return fallPose(q, t, Math.hypot(p.x1 - p.x0, p.y1 - p.y0), (p.x0 + p.x1) / 2, (p.y0 + p.y1) / 2,
+                    Math.atan2(p.y1 - p.y0, p.x1 - p.x0));
+  };
 
   function landPlank() {
     var q = G.gap, p = q.plank, v = G.v;
     CG.Terrain.addPlank(p);
     q.phase = 'drive'; q.t = 0; q.tipped = false;
+    q.ruler.target = 0;                  // ③ down: now the ruler folds away
     A.sfx('slam');
     R.shake = Math.max(R.shake, 9);
     for (var k = 0; k < 6; k++) FX.dust(p.x0, p.y0, -60, 0, 1);
@@ -4732,7 +4769,6 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     }
     G.time += dt;
     if (G.freePlay) freePlayTick(v, dt);
-    if (G.aheadT > 0) G.aheadT = Math.max(0, G.aheadT - dt);
 
     if (G.boostT > 0) G.boostT = Math.max(0, G.boostT - dt);
     if (G.invuln > 0) G.invuln -= dt;
@@ -5112,42 +5148,6 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     c.restore();
   }
 
-  /* The free-play pill, in the question's frosted glass and the same spot,
-     so the thing that tells you to explore becomes the thing that asks. A
-     bar fills over the free-play time; then it points you on to the gap. */
-  function drawFreePlay() {
-    var c = R.ctx, W = R.W;
-    var bandL = Math.max(HUD_X + HUD_W, R.hudRight || 0) + 14, bandR = W - 440, ty = 42, sh = 52;
-    if (bandR - bandL < 360) { bandL = 16; bandR = W - 16; ty = 150; }
-    var pw = CG.clamp(bandR - bandL, 240, 440), tx = (bandL + bandR) / 2;
-    var line, sub = null, k, col;
-    if (G.freePlay) {
-      k = CG.clamp(G.freeT / FREE_T, 0, 1);
-      line = k < 1 ? 'Free drive! Get a feel for the truck' : 'Nice! Drive on to find the first gap';
-      col = k < 1 ? ['#FFD968', '#FFAA24'] : ['#A6EC5E', '#4CAE22'];
-    } else {
-      k = 1;
-      line = 'Gap ahead! Get ready to build a bridge';
-      col = ['#A6EC5E', '#4CAE22'];
-    }
-    var a = G.freePlay ? CG.clamp(G.freeT / 0.5, 0, 1) : CG.clamp(G.aheadT / 0.6, 0, 1);
-    c.save();
-    c.globalAlpha = a;
-    var py = ty - (1 - a) * 20;
-    R.glass(tx - pw / 2, py - sh / 2, pw, sh, sh / 2);
-    var fs = Math.min(17, (pw - 60) / 20);
-    R.text(line, tx, py - 5, fs, R.NAVY, 'center', 0, false, R.CW);
-    /* the bar along the bottom of the pill */
-    var bw = pw - sh * 1.2, bx = tx - bw / 2, by = py + sh / 2 - 15, bh = 6;
-    R.roundRect(bx, by, bw, bh, bh / 2); c.fillStyle = 'rgba(27,42,94,0.12)'; c.fill();
-    if (k > 0.01) {
-      R.roundRect(bx, by, Math.max(bh, bw * k), bh, bh / 2);
-      c.fillStyle = barGrad(by, bh, col[0], col[1]); c.fill();
-    }
-    if (!G.freePlay) R.flick(tx + pw / 2 - 18, py - 5, 16, 1);
-    c.restore();
-  }
-
   /* Only what the moment needs. While a chasm has the player's attention
      (from the auto-brake to the far lip) the stats and the fuel gauge fade
      out: the world is waiting and none of it can change. The fuel gauge is
@@ -5212,7 +5212,6 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       c.font = R.font(20);
       var hw = hearts > 0 ? 22 + hs + 4 + c.measureText(hn).width : 0;
       var w = pad + dw + 26 + ic + 8 + cw + hw + pad;
-      R.hudRight = hx + w;
       R.card(hx, hy, w, hh, hh / 2);
       var mid = hy + hh / 2, x = hx + pad;
       R.text(dist, x, mid + 1, 26, '#FFFFFF', 'left', 0);
@@ -5271,8 +5270,6 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       pedal(W - 104, py, pr, 1, G.input.gas > 0);
     }
 
-    if (G.state === 'play' && !G.gap && (G.freePlay || G.aheadT > 0)) drawFreePlay();
-
     /* boost flash */
     if (G.boostT > 0) {
       c.save();
@@ -5320,8 +5317,25 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     return { x: x, y: y };
   }
 
+  /* ① the "cut at N" callout beside the ruler, outside the ruler's clip */
+  function drawCutCallout(q, cc) {
+    var c = R.ctx, ca = cc.a, y1 = cc.y, rx = cc.rx;
+    var ct = 'cut at ' + q.len, cfs = 15;
+    c.save(); c.globalAlpha = ca;
+    c.font = R.font(cfs, false, R.CW);
+    var cw = c.measureText(ct).width + 44, chh = 30;
+    var cxr = rx - 16, cxl = Math.max(8, cxr - cw), cyy = y1 - chh / 2;
+    R.glass(cxl, cyy, cw, chh, chh / 2, { edgeW: 1.5 });
+    c.beginPath(); c.arc(cxl + 16, y1, 8, 0, CG.TAU);
+    c.fillStyle = barGrad(y1 - 8, 16, '#FFC04D', '#FF8A1F'); c.fill();
+    R.text(ct, cxl + 30, y1 + 1, cfs, R.NAVY, 'left', 0, false, R.CW);
+    c.beginPath(); c.moveTo(cxl + cw - 1, y1 - 6); c.lineTo(cxl + cw + 9, y1); c.lineTo(cxl + cw - 1, y1 + 6);
+    c.closePath(); c.fillStyle = 'rgba(246,251,255,0.97)'; c.fill();
+    c.restore();
+  }
+
   function drawRuler(q) {
-    var c = R.ctx, ru = q.ruler, N = CG.Gaps.RULER_MAX, i;
+    var c = R.ctx, ru = q.ruler, N = CG.Gaps.RULER_MAX, i, cutCall = null;
     var a = rulerAnchor(), box = RULER_BOX;
     var vx = a.x, gx = a.x + box + 10, top = a.y - box / 2;      // value box, go button
     R.avoid = { l: vx - 6, r: gx + box + 6, t: top - 6, b: top + box + 10 };
@@ -5375,39 +5389,64 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
         }
         if (ru.open > 0.95 && !dead) btn('rul' + i, rx - 6, y - step / 2, RULER_W + 12, step, 4);
       }
-      /* THE CUT (phase spawn): a wooden strip grows up the ruler from 0 to
-         the chosen mark, a dashed cut line and the scissors snip across it,
-         then the piece slides out of the ruler; its screen rect (q.cut) is
-         where the falling plank starts */
-      if (q.phase === 'spawn' && q.len) {
-        var ck = q.t / SPAWN_T, y0 = Math.min(ry + full - 4, ry + 14 + N * step + step / 2);
-        var y1 = ry + 14 + (N - q.len) * step + step / 2;
-        var grow = ease(CG.clamp(ck / 0.35, 0, 1)), slide = ease(CG.clamp((ck - 0.6) / 0.4, 0, 1));
-        var sw = 20, sx = rx + 3 - slide * 34, stop = y0 - (y0 - y1) * grow;
-        q.cut = { x: sx + sw / 2, top: y1, bot: y0 };
+      /* ① THE CUT (phase spawn), on the ruler itself: a glowing wooden strip
+         fills the ruler from 0 up to the chosen mark, a "cut at N" callout
+         names the mark, the scissors snip across it, and the piece pops
+         loose - lifting and starting to tip towards the hole. Its screen
+         position (q.cut) is where the fall begins.
+         ② THE FALL (phase place) leaves a dashed empty slot behind, so the
+         ruler it came out of is still there to see. */
+      if ((q.phase === 'spawn' || q.phase === 'place') && q.len) {
+        var ck = q.phase === 'spawn' ? q.t / SPAWN_T : 1;
+        var y0 = ry + 14 + N * step + step / 2, y1 = ry + 14 + (N - q.len) * step + step / 2;
+        var grow = ease(ck / 0.32), pop = ease((ck - 0.62) / 0.38);
+        var sw = 20, sx = rx + 3, stop = y0 - (y0 - y1) * grow;
+        var ccx = sx + sw / 2 + pop * 12, ccy = (stop + y0) / 2 - pop * 10, tilt = pop * 0.16;
+        if (q.phase === 'spawn') q.cut = { x: ccx, y: ccy, len: y0 - y1, tilt: tilt };
         c.save();
-        R.roundRect(sx, stop, sw, y0 - stop, 4);
-        c.fillStyle = barGrad(stop, y0 - stop, '#E9B26A', '#B8773A'); c.fill();
-        c.lineWidth = 2; c.strokeStyle = '#7A4A1E'; c.stroke();
-        c.strokeStyle = 'rgba(120,70,25,0.35)'; c.lineWidth = 1;
-        c.beginPath(); c.moveTo(sx + 7, stop + 4); c.lineTo(sx + 7, y0 - 4); c.moveTo(sx + 13, stop + 6); c.lineTo(sx + 13, y0 - 6); c.stroke();
-        if (ck > 0.3 && slide < 1) {            // the cut line and the scissors crossing it
-          var sk = ease(CG.clamp((ck - 0.3) / 0.28, 0, 1));
-          c.setLineDash([5, 4]); c.lineWidth = 2; c.strokeStyle = '#F0443A';
-          c.beginPath(); c.moveTo(rx - 10, y1); c.lineTo(rx + RULER_W + 6, y1); c.stroke();
-          c.setLineDash([]);
-          var scx = rx - 16 + sk * (RULER_W + 10), scy = y1, op = ck < 0.55 ? Math.abs(Math.sin(ck * 40)) * 0.5 : 0;
-          c.strokeStyle = '#F0443A'; c.lineWidth = 3; c.lineCap = 'round';
+        if (q.phase === 'place' || pop > 0) {           // the empty slot it came out of
+          c.globalAlpha = q.phase === 'place' ? CG.clamp(1 - q.t / (PLACE_T * 0.8), 0, 1) : pop;
+          c.setLineDash([4, 3]); c.lineWidth = 1.5; c.strokeStyle = '#E08A1E';
+          R.roundRect(sx, y1, sw, y0 - y1, 4); c.stroke();
+          c.setLineDash([]); c.globalAlpha = 1;
+        }
+        if (q.phase === 'spawn') {
+          c.save();
+          c.translate(ccx, ccy); c.rotate(tilt); c.translate(-ccx, -ccy);
+          var ox = pop * 12, oy = -pop * 10;
+          R.roundRect(sx + ox, stop + oy, sw, y0 - stop, 4);
+          c.shadowColor = 'rgba(255,150,30,' + (0.75 * (1 - pop * 0.6)).toFixed(3) + ')'; c.shadowBlur = 12;
+          c.fillStyle = barGrad(stop + oy, y0 - stop, '#EDB872', '#B8773A'); c.fill();
+          c.shadowBlur = 0;
+          c.lineWidth = 2; c.strokeStyle = '#7A4A1E'; c.stroke();
+          c.strokeStyle = 'rgba(120,70,25,0.35)'; c.lineWidth = 1;
           c.beginPath();
-          c.moveTo(scx - 10, scy - 4 - op * 6); c.lineTo(scx + 10, scy + 3);
-          c.moveTo(scx - 10, scy + 4 + op * 6); c.lineTo(scx + 10, scy - 3);
+          c.moveTo(sx + ox + 7, stop + oy + 4); c.lineTo(sx + ox + 7, y0 + oy - 4);
+          c.moveTo(sx + ox + 13, stop + oy + 6); c.lineTo(sx + ox + 13, y0 + oy - 6);
           c.stroke();
-          c.lineWidth = 2.5;
-          c.beginPath(); c.arc(scx - 13, scy - 6 - op * 6, 4, 0, CG.TAU); c.stroke();
-          c.beginPath(); c.arc(scx - 13, scy + 6 + op * 6, 4, 0, CG.TAU); c.stroke();
-          c.lineCap = 'butt';
+          c.restore();
+          if (ck > 0.28 && pop < 0.3) {                // the cut line and the scissors crossing it
+            var sk = ease((ck - 0.3) / 0.26);
+            c.setLineDash([5, 4]); c.lineWidth = 2; c.strokeStyle = '#F0443A';
+            c.beginPath(); c.moveTo(rx - 10, y1); c.lineTo(rx + RULER_W + 6, y1); c.stroke();
+            c.setLineDash([]);
+            var scx = rx - 16 + sk * (RULER_W + 10), scy = y1, op = ck < 0.56 ? Math.abs(Math.sin(ck * 40)) * 0.5 : 0;
+            c.strokeStyle = '#F0443A'; c.lineWidth = 3; c.lineCap = 'round';
+            c.beginPath();
+            c.moveTo(scx - 10, scy - 4 - op * 6); c.lineTo(scx + 10, scy + 3);
+            c.moveTo(scx - 10, scy + 4 + op * 6); c.lineTo(scx + 10, scy - 3);
+            c.stroke();
+            c.lineWidth = 2.5;
+            c.beginPath(); c.arc(scx - 13, scy - 6 - op * 6, 4, 0, CG.TAU); c.stroke();
+            c.beginPath(); c.arc(scx - 13, scy + 6 + op * 6, 4, 0, CG.TAU); c.stroke();
+            c.lineCap = 'butt';
+          }
         }
         c.restore();
+        /* the callout: "cut at N", beside the ruler at the mark - drawn after
+           the ruler's clip is lifted, below */
+        var ca = q.phase === 'spawn' ? ease((ck - 0.2) / 0.15) : CG.clamp(1 - q.t / 0.35, 0, 1);
+        cutCall = ca > 0.01 ? { a: ca, y: y1, rx: rx } : null;
       }
       /* the little pointer down onto the box */
       c.beginPath(); c.moveTo(rx + RULER_W / 2 - 10, ry + full - 2); c.lineTo(rx + RULER_W / 2 + 10, ry + full - 2);
@@ -5415,6 +5454,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       c.fillStyle = '#EAF2FC'; c.fill();
       c.lineJoin = 'round'; c.lineWidth = 2; c.strokeStyle = '#C9DAEE'; c.stroke();
       c.restore();
+      if (cutCall) drawCutCallout(q, cutCall);
     }
     /* value box: a white glass tile - a dashed slot while empty, the number once chosen */
     c.save();
@@ -5536,8 +5576,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
         drawRuler(q);
         c.restore();
       }
-    } else if ((q.phase === 'spawn' || q.phase === 'place') && q.plank) {
-      drawRuler(q);                    // folded, showing the number chosen, until the plank lands
+    } else if (q.plank && (q.phase === 'spawn' || q.phase === 'place' || (q.phase === 'drive' && q.ruler.open > 0.02))) {
+      drawRuler(q);                    // open for the cut and the fall; folds away once it lands
     }
     if (q.fade > 0.005) {
       c.save();
@@ -5878,6 +5918,34 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
               stage ? 'STAGE MAP' : 'HOME', 'blue', 'iconHome', stage ? 'Pick another climb' : 'Back to main menu');
   }
 
+  /* ② the falling plank, with two fading copies of where it just was */
+  function drawFall(q) {
+    var c = R.ctx;
+    for (var g = 2; g >= 1; g--) {
+      var gp = G.fallPose(Math.max(0, q.t - g * 0.045));
+      gp.alpha = 0.16 * (3 - g);
+      R.drawPlank(gp, null);
+    }
+    R.drawPlank(G.plankPose(), q.t < PLACE_T * 0.78 ? q.len + ' units' : null);
+  }
+
+  /* ③ the landing: short bursts of light either side of the plank's middle */
+  function drawImpact(q) {
+    var c = R.ctx, p = q.plank, k = q.t / 0.45, z = R.cam.z;
+    var mx = R.sx((p.x0 + p.x1) / 2), my = R.sy((p.y0 + p.y1) / 2) - 18 * z;
+    c.save();
+    c.globalAlpha = 1 - k;
+    c.strokeStyle = '#FFD23F'; c.lineCap = 'round'; c.lineWidth = Math.max(3, 4 * z);
+    var r0 = (14 + 26 * ease(k)) * z, r1 = r0 + 16 * z, a = [-2.35, -2.0, -1.65, -1.49, -1.14, -0.79];
+    c.beginPath();
+    for (var i = 0; i < a.length; i++) {
+      var ux = Math.cos(a[i]), uy = Math.sin(a[i]);
+      c.moveTo(mx + ux * r0 * 1.6, my + uy * r0); c.lineTo(mx + ux * r1 * 1.6, my + uy * r1);
+    }
+    c.stroke();
+    c.restore();
+  }
+
   /* --------------------------------------------------------------- draw */
   function draw(dt) {
     var c = R.ctx;
@@ -5898,12 +5966,16 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     R.drawPickups(G.time);
     R.drawFX(false);
     R.legsUp = !!(q && q.hint && q.phase === 'ask');
+    R.sheet = null;
     if (q) R.drawGrid(q.g, q.grid, q.axes);          // the plane, over the world
     R.drawPlanks(q && q.plank);
     if (q && q.plank && q.phase !== 'ask') {
       /* the length is labelled while the plank falls into place; once down
          it is road, and the label would only peek out from under the truck */
-      if (q.phase !== 'spawn') R.drawPlank(G.plankPose(), q.phase === 'place' ? q.len + ' units' : null);
+      /* on the ruler (spawn) it is drawn by drawRuler; falling (place) it is
+         drawn over the UI, after drawGapUI, so it visibly leaves the ruler
+         instead of starting out hidden behind it */
+      if (q.phase !== 'spawn' && q.phase !== 'place') R.drawPlank(G.plankPose(), null);
     }
     if (q) R.drawGapPoints(q.g, q.ptA, q.hint && q.phase === 'ask', q.ptB);
     R.drawVehicle(G.v, dt);
@@ -5920,6 +5992,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     else {
       drawHUD(dt);
       if (q && G.state === 'play') drawGapUI();
+      if (q && q.plank && q.phase === 'place' && G.state === 'play') drawFall(q);
+      if (q && q.plank && q.plank.kind === 'exact' && q.phase === 'drive' && q.t < 0.45) drawImpact(q);   // only a fit gets the burst
       if (G.state === 'paused') drawPaused();
       else if (G.state === 'over') drawOver();
       else if (G.state === 'win') drawWin();
