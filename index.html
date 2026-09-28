@@ -2997,13 +2997,12 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      is not the grid stays quiet, so the two gold points and the dashed span
      between them are what the eye finds.
 
-       sheet   warm cream at 80% (94% at night), on a soft shadow and a hairline edge -
+       sheet   warm cream at 80% (92% at night), on a soft shadow and a hairline edge -
                solid enough to read the same over any sky, season or hour,
                see-through enough that the world stays behind it
-       ground  the terrain's own profile traced across the sheet as a green
-               line, so the hole the plank has to span is the one gap in it
+       ground  not drawn: the real ground and the hole show through the sheet
        grid    a single pale-blue rule every whole unit
-       axes    navy, an arrowhead and a letter at the positive end of each,
+       axes    faded navy, an arrowhead and a letter at the positive end of each,
                a tick and a number at every whole unit (every second or
                fifth once units get too small to hold a number)
      `alpha` fades the panel in, `axisAlpha` the axes a beat later - see the
@@ -3055,10 +3054,13 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      (see R.drawGrade), and seen through it the ungraded world would glow
      like a window onto daytime. */
   var GRID_LINE = 'rgba(140,182,220,0.6)';
-  function paper() { return 'rgba(251,246,236,' + (0.8 + 0.14 * (CG.Env.night || 0)).toFixed(3) + ')'; }
-  var INK_NAVY = '#1E2A5A', AXIS_COL = INK_NAVY, NUM_COL = INK_NAVY;
+  function paper() { return 'rgba(251,246,236,' + (0.8 + 0.12 * (CG.Env.night || 0)).toFixed(3) + ')'; }
+  /* Two weights of ink. The SCALE - axes, ticks, their numbers - is faded
+     navy, there to be read when wanted; the DATA - the two points' labels -
+     keeps the full ink, so the eye goes to the points and the span first. */
+  var INK_NAVY = '#1E2A5A', AXIS_COL = 'rgba(30,42,90,0.55)', NUM_COL = 'rgba(30,42,90,0.62)';
+  var AXIS_LETTER = 'rgba(30,42,90,0.72)';
   R.INK_NAVY = INK_NAVY;
-  var GROUND_LINE = 'rgba(104,160,72,0.9)';
 
   function drawPlane(gap, alpha, axisAlpha) {
     var c = R.ctx, z = R.cam.z, U = CG.UNIT, b = R.gridBox(gap);
@@ -3090,16 +3092,10 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       c.moveTo(left, y); c.lineTo(right, y);
     }
     c.stroke();
-    /* the ground, traced as a green line, so the hollow reads as the one
-       gap in it (the real ground shows faintly through the sheet) */
-    var T = CG.Terrain, step = 4, wx0 = R.cam.x + (left - R.W / 2) / z;
-    c.beginPath();
-    for (x = left; x <= right + step; x += step) {
-      var gy = R.sy(T.ground(wx0 + (x - left) / z));
-      if (x === left) c.moveTo(x, gy); else c.lineTo(x, gy);
-    }
-    c.lineJoin = 'round';
-    c.lineWidth = 2.5; c.strokeStyle = GROUND_LINE; c.stroke();
+    /* No outline of the ground is drawn on the sheet: the lips sit on whole
+       units, so a traced wall ran exactly along a grid line, struck through
+       the number under it and read as one more number line. The real ground
+       and the hole show through the sheet instead. */
     c.restore();
     /* edge: one hairline, the sheet's own border */
     R.roundRect(left, top, w, h, rad);
@@ -3112,7 +3108,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var ax = R.sx(gap.ox), ay = R.sy(gap.oy);
     var rpx = 1 / (R.cssK || 1);                    // design px per real px
     var fs = CG.clamp(17 * z, Math.max(13, 12 * rpx), Math.max(21, 12 * rpx));
-    var aw = CG.clamp(2.6 * z, 2.2, 3.2), arrow = CG.clamp(14 * z, 11, 17), tick = CG.clamp(6 * z, 5, 8);
+    var aw = CG.clamp(2.2 * z, 1.8, 2.6), arrow = CG.clamp(13 * z, 10, 16), tick = CG.clamp(6 * z, 5, 8);
     /* a number at every unit while they fit side by side, else every
        second, else every fifth */
     var every = unitPx >= fs * 1.9 ? 1 : unitPx * 2 >= fs * 1.9 ? 2 : 5;
@@ -3149,6 +3145,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     if (showX) arrowHead(xR, ay, 1, 0);
     if (showY) arrowHead(ax, yT, 0, -1);
     c.font = R.font(fs * 1.3, false, 800);
+    c.fillStyle = AXIS_LETTER;
     c.textBaseline = 'middle';
     if (showX) { c.textAlign = 'left'; c.fillText('x', xR + arrow * 0.7, ay - fs * 0.05); }
     if (showY) { c.textAlign = 'left'; c.fillText('y', ax + fs * 0.55, yT - arrow * 0.15); }
