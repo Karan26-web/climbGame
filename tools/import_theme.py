@@ -274,8 +274,37 @@ def main():
     where = f'assets/themes/{theme}/' if theme else 'assets/'
     print('\n' + ('dry run — nothing written' if dry else
                   f'installed {len(report)} assets into {where}'))
+    if not dry:
+        write_manifest()
     return 0
 
 
+PACK_FILES = ['sky.webp', 'hills_far.webp', 'hills_mid.webp', 'trees_near.webp',
+              'foreground_grass.webp', 'grass_top.webp', 'dirt_body.webp']
+
+
+def write_manifest():
+    """Record the installed season packs in index.html (CG.INSTALLED), so the
+    engine only requests packs that exist. A pack counts once all seven files
+    are present; the night sky is separate and optional."""
+    import re
+    base = os.path.join(ROOT, 'assets', 'themes')
+    packs = [n for n in ('summer', 'autumn', 'winter')
+             if all(os.path.exists(os.path.join(base, n, f)) for f in PACK_FILES)]
+    night = os.path.exists(os.path.join(base, 'night_sky.webp'))
+    index = os.path.join(ROOT, 'index.html')
+    html = open(index, encoding='utf-8').read()
+    data = json.dumps({'packs': packs, 'nightSky': night})
+    pat = re.compile(r'(/\* THEMES:START \*/ ).*?( /\* THEMES:END \*/)')
+    if not pat.search(html):
+        print('THEMES markers not found in index.html - manifest not updated')
+        return
+    open(index, 'w', encoding='utf-8').write(pat.sub(lambda m: m.group(1) + data + m.group(2), html, count=1))
+    print(f'index.html manifest: packs={packs} nightSky={night}')
+
+
 if __name__ == '__main__':
+    if '--manifest' in sys.argv:          # just rescan assets/themes/ and rewrite the manifest
+        write_manifest()
+        sys.exit(0)
     sys.exit(main())

@@ -1300,6 +1300,12 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   };
   CG.SEASONS = ['spring', 'summer', 'autumn', 'winter'];
   CG.themes = {};
+  /* Which packs are actually installed. Written by tools/import_theme.py
+     (every install rescans assets/themes/), because a pack cannot be
+     discovered at runtime without asking for files that may not exist -
+     which on Vercel or over file:// is a wall of red 404s in the console on
+     every launch. fetch() of a JSON manifest is not an option over file://. */
+  CG.INSTALLED = /* THEMES:START */ {"packs": [], "nightSky": false} /* THEMES:END */;
 
   /* No pixel is ever READ from a pack: the game ships over file://, where an
      image drawn to a canvas taints it and getImageData throws. The colour
@@ -1311,7 +1317,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     for (var k in PACK_FILES) spring[k] = CG.img[k];
     CG.themes.spring = spring;
     CG.SEASONS.forEach(function (name) {
-      if (name === 'spring') return;
+      if (name === 'spring' || CG.INSTALLED.packs.indexOf(name) < 0) return;
       var keys = Object.keys(PACK_FILES), pack = {}, left = keys.length, dead = false;
       keys.forEach(function (k) {
         var im = new Image();
@@ -1327,6 +1333,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       });
     });
     /* the one shared night sky, optional; stars are drawn either way */
+    if (!CG.INSTALLED.nightSky) return;
     var ns = new Image();
     ns.onload = function () { CG.img.nightSky = ns; };
     ns.src = 'assets/themes/night_sky.webp';
@@ -1474,10 +1481,13 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      and runs with zero audio files, and gets better if they are added.
      Engine and tyre noise are deliberately NOT sampled — they are driven
      continuously by rpm and slip, which a loop cannot do. */
-  /* Every sampled cue the game knows how to use. assets/audio/pack.json lists
-     which of them actually exist, e.g. ["coin","crash","win"] — one probe, so a
-     project with no audio files costs a single 404 instead of fourteen noisy
-     ones in the console. No pack.json at all = fully synthesised, by design. */
+  /* Every sampled cue the game knows how to use. A.PACK lists which of them
+     exist as assets/audio/<name>.webm, e.g. ["coin","crash","win"]. It is
+     embedded rather than probed: asking for a pack.json that is not there
+     cost a 404 on every launch, and fetch() is refused outright over file://.
+     Empty = fully synthesised, by design (the brake screech is embedded in
+     EMBED, see tools/import_sfx.py). */
+  A.PACK = /* AUDIO:START */ [] /* AUDIO:END */;
   var SLOTS = ['coin', 'fuel', 'gem', 'boost', 'land', 'thud', 'crash', 'flip',
                'click', 'over', 'check', 'win', 'star', 'plank', 'slam', 'go', 'wrong'];
   A.files = {};
@@ -1486,10 +1496,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   A.loadPack = function () {
     if (!A.ctx || A.packLoaded) return;
     A.packLoaded = true;
-    fetch('assets/audio/pack.json').then(function (r) {
-      if (!r.ok) throw 0;
-      return r.json();
-    }).then(function (list) {
+    if (!A.PACK.length || location.protocol === 'file:') return;
+    Promise.resolve(A.PACK).then(function (list) {
       (list || []).forEach(function (name) {
         if (SLOTS.indexOf(name) < 0) return;
         fetch('assets/audio/' + name + '.webm').then(function (r) {
@@ -4369,7 +4377,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
        done      across: the grid fades away and the plank stays for good
      A wrong answer costs time, never a life: the lesson is the reset, and
      a child who runs out of lives on arithmetic stops playing.             */
-  var SPAWN_T = 0.38, PLACE_T = 1.1, FAIL_T = 1.05, FADE_T = 0.45;
+  var SPAWN_T = 0.95, PLACE_T = 1.15, FAIL_T = 1.05, FADE_T = 0.45;
 
   /* THE STOP, AND THE REVEAL AFTER IT.
 
@@ -4500,7 +4508,23 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
         return COAST;
       }
       case 'spawn':
-        if (q.t >= SPAWN_T) { q.phase = 'place'; q.t = 0; }
+        /* THE CUT: a wooden strip fills the ruler from 0 to the chosen mark,
+           the scissors snip it there (see drawRuler), and the piece comes
+           free - from exactly where it sat on the ruler, at the ruler's own
+           size, to grow into the real plank on the way down */
+        if (!q.snipped && q.t >= SPAWN_T * 0.55) {
+          q.snipped = true; A.sfx('plank');
+        }
+        if (q.t >= SPAWN_T) {
+          var cu = q.cut, z = R.cam.z, L = Math.hypot(q.plank.x1 - q.plank.x0, q.plank.y1 - q.plank.y0);
+          if (cu) {
+            q.pose0 = { x: R.cam.x + (cu.x - R.W / 2) / z, y: R.cam.y + (cu.top - R.H / 2) / z + (cu.bot - cu.top) / (2 * z) };
+            q.scale0 = CG.clamp((cu.bot - cu.top) / (L * z), 0.05, 3);
+            for (var d1 = 0; d1 < 4; d1++) FX.dust(q.pose0.x, q.pose0.y, -30, -20, 0.5);
+          }
+          q.ruler.target = 0;                    // the ruler folds away behind the falling piece
+          q.phase = 'place'; q.t = 0;
+        }
         return COAST;
       case 'place':
         if (q.t >= PLACE_T) landPlank();
@@ -4523,15 +4547,15 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     len = len | 0;
     if (len < 1 || len > CG.Gaps.RULER_MAX || q.wrong[len]) return;
     q.len = len;
-    q.ruler.value = len; q.ruler.target = 0;
+    q.ruler.value = len;                 // the ruler stays open: the plank is cut from it
     learn('drop');
     q.plank = CG.Gaps.plankFor(q.g, len);
     var L = Math.hypot(q.plank.x1 - q.plank.x0, q.plank.y1 - q.plank.y0);
-    /* born vertically above the machine, its lower end clear of the roof */
-    q.pose0 = { x: G.v.x, y: G.v.y - 80 - L / 2 };
+    /* fallback only: the real start is the strip cut from the ruler (q.cut,
+       measured by drawRuler), taken when the piece comes free */
+    q.pose0 = { x: G.v.x, y: G.v.y - 80 - L / 2 }; q.scale0 = 1; q.cut = null; q.snipped = false;
     q.phase = 'spawn'; q.t = 0;
-    A.sfx('plank');
-    for (var k = 0; k < 5; k++) FX.dust(q.pose0.x, q.pose0.y + L / 2, 0, -40, 0.6);
+    A.sfx('click');
   };
 
   function ease(k) { k = CG.clamp(k, 0, 1); return k * k * (3 - 2 * k); }
@@ -4541,16 +4565,16 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var q = G.gap, p = q.plank;
     var L = Math.hypot(p.x1 - p.x0, p.y1 - p.y0), ang1 = Math.atan2(p.y1 - p.y0, p.x1 - p.x0);
     var tx = (p.x0 + p.x1) / 2, ty = (p.y0 + p.y1) / 2;
-    if (q.phase === 'spawn') {
-      var k = q.t / SPAWN_T;
-      var sc = k < 0.7 ? ease(k / 0.7) * 1.12 : 1.12 - 0.12 * ease((k - 0.7) / 0.3);
-      return { x: q.pose0.x, y: q.pose0.y, ang: -Math.PI / 2, len: L, scale: sc };
+    if (q.phase === 'spawn') {                  // still on the ruler - drawn there, not here
+      return { x: q.pose0.x, y: q.pose0.y, ang: -Math.PI / 2, len: L, scale: q.scale0 || 1, alpha: 0 };
     }
     if (q.phase === 'place') {
+      /* off the ruler: it tips over as it falls, grows to full size, and
+         arcs down onto the hole */
       var kk = q.t / PLACE_T;
-      var kr = ease(kk / 0.6), ks = ease((kk - 0.28) / 0.72);
-      return { x: CG.lerp(q.pose0.x, tx, ks), y: CG.lerp(q.pose0.y, ty, ks) - Math.sin(ks * Math.PI) * 26,
-               ang: CG.lerp(-Math.PI / 2, ang1, kr), len: L };
+      var kr = ease(kk / 0.7), ks = ease(kk), kz = ease(kk / 0.8);
+      return { x: CG.lerp(q.pose0.x, tx, ks), y: CG.lerp(q.pose0.y, ty, ks) - Math.sin(ks * Math.PI) * 60,
+               ang: CG.lerp(-Math.PI / 2, ang1, kr), len: L, scale: CG.lerp(q.scale0 || 1, 1, kz) };
     }
     return { x: tx, y: ty, ang: ang1, len: L };
   }
@@ -4896,7 +4920,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var fOn = q && (q.phase === 'ask' || q.phase === 'spawn' || q.phase === 'place' || q.phase === 'fail');
     R.focus = snap ? (fOn ? 1 : 0) : CG.approach(R.focus, fOn ? 1 : 0, fOn ? 2.6 : 1.8, dt);
     if (q && q.phase !== 'done') {
-      var g = q.g, f = gapFrame(g, v, q.phase === 'approach' ? 'wide' : q.phase === 'ask' ? 'tight' : 'medium');
+      var g = q.g, f = gapFrame(g, v, q.phase === 'approach' ? 'wide'
+                                     : q.phase === 'ask' || q.phase === 'spawn' || q.phase === 'place' ? 'tight' : 'medium');
       tx = f.x; ty = f.y; tz = f.z;
       kx = 4; ky = 4;
       if (q.phase === 'fail') { ty = CG.lerp(ty, v.y, 0.85); ky = 7; }   // watch it fall
@@ -5306,7 +5331,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     if (h > 2) {
       var rx = vx + box / 2 - RULER_W / 2, ry = top - 12 - h;
       c.save();
-      R.roundRect(rx - 6, ry - 6, RULER_W + 12, h + 14, 14); c.clip();
+      var cutRoom = q.phase === 'spawn' ? 52 : 0;           // the strip slides out, the scissors come in
+      R.roundRect(rx - 6 - cutRoom, ry - 6, RULER_W + 12 + cutRoom, h + 14, 14); c.clip();
       /* a white school ruler in the same glass as the tiles */
       c.save();
       c.shadowColor = 'rgba(20,40,110,0.3)'; c.shadowBlur = 10; c.shadowOffsetY = 4;
@@ -5349,6 +5375,40 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
         }
         if (ru.open > 0.95 && !dead) btn('rul' + i, rx - 6, y - step / 2, RULER_W + 12, step, 4);
       }
+      /* THE CUT (phase spawn): a wooden strip grows up the ruler from 0 to
+         the chosen mark, a dashed cut line and the scissors snip across it,
+         then the piece slides out of the ruler; its screen rect (q.cut) is
+         where the falling plank starts */
+      if (q.phase === 'spawn' && q.len) {
+        var ck = q.t / SPAWN_T, y0 = Math.min(ry + full - 4, ry + 14 + N * step + step / 2);
+        var y1 = ry + 14 + (N - q.len) * step + step / 2;
+        var grow = ease(CG.clamp(ck / 0.35, 0, 1)), slide = ease(CG.clamp((ck - 0.6) / 0.4, 0, 1));
+        var sw = 20, sx = rx + 3 - slide * 34, stop = y0 - (y0 - y1) * grow;
+        q.cut = { x: sx + sw / 2, top: y1, bot: y0 };
+        c.save();
+        R.roundRect(sx, stop, sw, y0 - stop, 4);
+        c.fillStyle = barGrad(stop, y0 - stop, '#E9B26A', '#B8773A'); c.fill();
+        c.lineWidth = 2; c.strokeStyle = '#7A4A1E'; c.stroke();
+        c.strokeStyle = 'rgba(120,70,25,0.35)'; c.lineWidth = 1;
+        c.beginPath(); c.moveTo(sx + 7, stop + 4); c.lineTo(sx + 7, y0 - 4); c.moveTo(sx + 13, stop + 6); c.lineTo(sx + 13, y0 - 6); c.stroke();
+        if (ck > 0.3 && slide < 1) {            // the cut line and the scissors crossing it
+          var sk = ease(CG.clamp((ck - 0.3) / 0.28, 0, 1));
+          c.setLineDash([5, 4]); c.lineWidth = 2; c.strokeStyle = '#F0443A';
+          c.beginPath(); c.moveTo(rx - 10, y1); c.lineTo(rx + RULER_W + 6, y1); c.stroke();
+          c.setLineDash([]);
+          var scx = rx - 16 + sk * (RULER_W + 10), scy = y1, op = ck < 0.55 ? Math.abs(Math.sin(ck * 40)) * 0.5 : 0;
+          c.strokeStyle = '#F0443A'; c.lineWidth = 3; c.lineCap = 'round';
+          c.beginPath();
+          c.moveTo(scx - 10, scy - 4 - op * 6); c.lineTo(scx + 10, scy + 3);
+          c.moveTo(scx - 10, scy + 4 + op * 6); c.lineTo(scx + 10, scy - 3);
+          c.stroke();
+          c.lineWidth = 2.5;
+          c.beginPath(); c.arc(scx - 13, scy - 6 - op * 6, 4, 0, CG.TAU); c.stroke();
+          c.beginPath(); c.arc(scx - 13, scy + 6 + op * 6, 4, 0, CG.TAU); c.stroke();
+          c.lineCap = 'butt';
+        }
+        c.restore();
+      }
       /* the little pointer down onto the box */
       c.beginPath(); c.moveTo(rx + RULER_W / 2 - 10, ry + full - 2); c.lineTo(rx + RULER_W / 2 + 10, ry + full - 2);
       c.lineTo(rx + RULER_W / 2, ry + full + 9); c.closePath();
@@ -5388,7 +5448,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     c.fillStyle = 'rgba(255,255,255,0.38)'; c.fill();
     var cx = gx + box / 2, cy = top + box / 2 + 1;
     c.beginPath();
-    if (!ru.target || ready) {                                 // play / go
+    if (!ru.target || ready || q.phase !== 'ask') {            // play / go
       c.moveTo(cx - 7, cy - 10); c.lineTo(cx + 11, cy); c.lineTo(cx - 7, cy + 10);
     } else {                                                   // open, nothing picked: fold
       c.moveTo(cx - 12, cy - 6); c.lineTo(cx + 12, cy - 6); c.lineTo(cx, cy + 8);
@@ -5843,7 +5903,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     if (q && q.plank && q.phase !== 'ask') {
       /* the length is labelled while the plank falls into place; once down
          it is road, and the label would only peek out from under the truck */
-      R.drawPlank(G.plankPose(), q.phase === 'spawn' || q.phase === 'place' ? q.len + ' units' : null);
+      if (q.phase !== 'spawn') R.drawPlank(G.plankPose(), q.phase === 'place' ? q.len + ' units' : null);
     }
     if (q) R.drawGapPoints(q.g, q.ptA, q.hint && q.phase === 'ask', q.ptB);
     R.drawVehicle(G.v, dt);
