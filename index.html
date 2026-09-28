@@ -2656,15 +2656,19 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     if (pat === undefined) pat = dirtPats[name] = makeDirtPattern(pack.dirt);
     c.globalAlpha = alpha;
     if (pat) {
-      /* World-locked: the soil scrolls at exactly the surface's rate. A
-         screen-locked soil was tried (quieter under the grass) and rejected:
-         with the grass line streaming past a texture that stands still, the
-         two rates disagree and the sense of speed goes with them. */
-      var ox = -(R.cam.x * z) % patTile, oy = -(R.cam.y * z) % patTile;
+      /* World-locked, in position AND scale: the soil is painted in world
+         space - one tile is patTile world px - so it moves and zooms exactly
+         with the ground and the grass on it. It used to be a fixed-size
+         screen pattern that only scrolled with the camera; every zoom change
+         (the speed-based ease-out, the push-in at each hole) then slid the
+         texture sideways under the grass, by hundreds of px at a push-in. */
+      c.save();
+      c.translate(R.W / 2 - R.cam.x * z, R.H / 2 - R.cam.y * z);
+      c.scale(z, z);
       c.fillStyle = pat;
-      c.translate(ox, oy);
-      c.fillRect(-ox - patTile, -oy - patTile, R.W + patTile * 2, R.H + patTile * 2);
-      c.translate(-ox, -oy);
+      var hw = R.W / (2 * z) + 8, hh = R.H / (2 * z) + 8;
+      c.fillRect(R.cam.x - hw, R.cam.y - hh, hw * 2, hh * 2);
+      c.restore();
     } else {
       c.fillStyle = '#8D6E63';
       c.fillRect(0, 0, R.W, R.H);
