@@ -108,7 +108,7 @@ function assert(cond, msg) { if (!cond) throw new Error('FAILED: ' + msg); conso
 
   const g2 = await page.evaluate(() => {
     const g = CG.Game.gap.g;
-    return { D: g.q.D, stopX: g.stopX };
+    return { D: g.q.D, stopX: g.stopX, a: g.a.slice(), b: g.b.slice() };
   });
   console.log('chasm 2', JSON.stringify(g2));
   const spacing = g2.stopX - g1.stopX;
@@ -123,7 +123,17 @@ function assert(cond, msg) { if (!cond) throw new Error('FAILED: ' + msg); conso
   await gas(false);
   await waitPhase('ask', 5000);
   await page.waitForTimeout(700);
-  assert(await page.evaluate((k) => CG.Game.gap.wrong[k] === true, wrongI), 'the wrong length is crossed out after the reset');
+  /* a miss brings a NEW set of points for the same hole: the plane slides
+     under the lips, the coordinates change, the distance does not - and the
+     ruler starts clean, since it is a fresh question */
+  const g2b = await page.evaluate(() => {
+    const g = CG.Game.gap.g;
+    return { D: g.q.D, a: g.a.slice(), b: g.b.slice(), crossed: Object.keys(CG.Game.gap.wrong).length };
+  });
+  console.log('after the miss', JSON.stringify(g2b));
+  assert(g2b.a.join() !== g2.a.join() || g2b.b.join() !== g2.b.join(), 'a new set of points after the reset');
+  assert(g2b.D === g2.D, 'the new points are the same distance apart (the hole did not change)');
+  assert(g2b.crossed === 0, 'nothing is crossed out on the fresh question');
 
   await tryAnswer(g2.D, null);
   await page.waitForFunction(() => !CG.Game.gap || CG.Game.gap.phase === 'done', null, { timeout: 12000 });

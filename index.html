@@ -487,17 +487,19 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      sqrt(L^2 - dx^2) below the near lip) stays clear of the floor, and that a
      fall reads as a fall before the reset. */
   CG.UNIT = 72;
-  /* STOP is where the car's centre is held. The plank machine (MACH_W wide,
-     its outfeed at the near lip) stands between the truck and the drop, and
-     between the truck's bull bar and the machine sit the ruler keys - screen-
-     space, so they need the same ~150 screen px at every zoom, and the
-     question's camera zooms out to 0.5 for the tallest planes: 300 world px
-     of clear road. STOP 720 leaves 318 (the bull bar is 121 ahead of the
-     car's centre, the machine reaches 281 back from the lip), so the ruler
-     never stands on the truck. ARM keeps the auto-brake the same 570px to do
-     its work in. */
-  CG.CHASM = { APP: 900, RUN: 640, PIT: 1500, WALL: 10, STOP: 720, ARM: 1290, CHUTE: 600,
-               MACH_W: 280, MACH_OUT: 4 };
+  /* THE ROW AT A GAP: the truck, the plank generator console (the ruler
+     stands on it), the saw, the plane - each a hand's width from the next
+     (see Gaps.holdFor, which works out where the truck is held). APP is the
+     level approach, long enough that even the furthest hold (a tall plane,
+     the camera zoomed right out) has the whole truck on the level: the road
+     before it is whatever the last part left, up to 40px off. BRAKE is the
+     run the auto-brake gets to bring the truck to its hold. The saw stands
+     MACH_CLEAR clear of the plane's left edge, never nearer the lip than
+     MACH_OUT nor further back than MACH_SET; KEYS_ROOM is the screen px the
+     console and ruler take between truck and saw, gaps included. */
+  CG.CHASM = { APP: 1100, RUN: 640, PIT: 1500, WALL: 10, CHUTE: 600,
+               STOP: 720, STOP_MIN: 420, TAIL_ROOM: 140, BRAKE: 570,
+               MACH_W: 280, MACH_OUT: 4, MACH_CLEAR: 16, MACH_SET: 260, KEYS_ROOM: 168 };
 
   /* -------------------------------------------------------------- builder */
   /* plan: array of part names, plus the markers 'CP' (checkpoint on the part
@@ -641,13 +643,73 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       ax: ax, ay: ay, bx: bx, by: by,
       ox: ax - spec[0] * U, oy: ay + spec[1] * U,   // grid origin in world space
       floorY: CG.BASE_Y - (y + p.floor),
-      stopX: ax - CG.CHASM.STOP,               // where the car is held
-      armX: ax - CG.CHASM.ARM,                 // where the auto-brake takes over
       D: Math.hypot(spec[2] - spec[0], spec[3] - spec[1]),
       solved: false
     };
     gap.q = Gaps.question(gap);
+    gap.stopX = ax - Gaps.holdFor(gap);                // where the car is held
+    gap.armX = gap.stopX - CG.CHASM.BRAKE;             // where the auto-brake takes over
     return gap;
+  };
+
+  /* The plane's extent in grid units: both points and the origin, a unit of
+     margin either side (plus `padR` spare columns on the right, see
+     tightFrame), two rows below the lower point and three above the higher -
+     room for its label and the y arrow. */
+  Gaps.gridRange = function (gap, padR) {
+    return { minGX: Math.min(gap.a[0], gap.b[0], 0) - 1,
+             maxGX: Math.max(gap.a[0], gap.b[0], 0) + 1 + (padR || 0),
+             minGY: Math.min(gap.a[1], gap.b[1], 0) - 2, maxGY: Math.max(gap.a[1], gap.b[1], 0) + 3 };
+  };
+
+  /* THE QUESTION'S CAMERA, as world bounds and a zoom, for a truck whose
+     tail-side frame edge is `left` on a Wd x Hd design screen with `sub`
+     lines of hint/tips under the question: the whole plane, as large as the
+     screen allows between the question (and its lines) and the foreground
+     grass. Height-bound (a short gap on a wide screen), the spare width
+     becomes more plane to the right - up to 4 columns (padR). Pure: the
+     camera frames with it and Gaps.holdFor plans the row with it. */
+  Gaps.tightFrame = function (gap, left, Wd, Hd, sub) {
+    var U = CG.UNIT, r = Gaps.gridRange(gap, 0);
+    var right = gap.ox + (r.maxGX + 0.5) * U + 26;
+    var top = gap.oy - (r.maxGY + 0.5) * U - 10, bottom = gap.oy - (r.minGY - 0.5) * U + 10;
+    var bandT = 100 + 44 * sub, bandB = Hd - 84, padR = 0;
+    var zV = (bandB - bandT) / (bottom - top), zH = 0.97 * Wd / (right - left);
+    if (zV < zH) {
+      padR = CG.clamp(Math.floor((0.97 * Wd / Math.min(zV, 1.4) - (right - left)) / U), 0, 4);
+      right += padR * U;
+    }
+    return { left: left, right: right, top: top, bottom: bottom, bandT: bandT, bandB: bandB, padR: padR,
+             z: CG.clamp(Math.min(0.97 * Wd / (right - left), zV), 0.5, 1.4) };
+  };
+
+  /* Where the saw's outfeed (its right-hand end) stands: just clear of the
+     plane, so neither the plane nor the near point's label sits on it. */
+  Gaps.machineRight = function (gap) {
+    var W = CG.CHASM, paneL = gap.ox + (Gaps.gridRange(gap, 0).minGX - 0.5) * CG.UNIT;
+    return Math.max(gap.ax - W.MACH_SET, Math.min(gap.ax - W.MACH_OUT, paneL - W.MACH_CLEAR));
+  };
+
+  /* WHERE THE TRUCK IS HELD, as a distance back from the near lip: behind
+     the saw by the room the console and ruler need. They are screen-sized
+     (they must stay tappable), so that room is KEYS_ROOM over the question
+     camera's zoom on a Wd x Hd screen with `sub` lines under the question -
+     by default 16:9 with a line of tips, the tightest a landscape screen
+     gets, which is what the stage test holds the truck at; the game re-plans
+     for the real screen when the chasm arms (replanHold) - and the zoom
+     itself depends on the hold (a wider row can make a wide frame), so it
+     is settled by iterating. The leash makes the speed at the lip the same
+     from any of these holds. */
+  Gaps.holdFor = function (gap, Wd, Hd, sub) {
+    var W = CG.CHASM, V = CG.VConst, hold = W.STOP, i;
+    Wd = Wd || 1280; Hd = Hd || 720; sub = sub === undefined ? 1 : sub;
+    var nose = Math.max.apply(null, V.hull.map(function (p) { return p.x; }));
+    var reach = gap.ax - (Gaps.machineRight(gap) - W.MACH_W);    // lip to the saw's back
+    for (i = 0; i < 4; i++) {
+      var z = Gaps.tightFrame(gap, gap.ax - hold - 150, Wd, Hd, sub).z;
+      hold = reach + W.KEYS_ROOM / z + nose;
+    }
+    return CG.clamp(hold, W.STOP_MIN, W.APP - W.TAIL_ROOM);
   };
 
   /* The plank a choice of `len` units produces, as a driving surface
@@ -720,22 +782,26 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     return v.crashed || v.y > Math.max(gap.ay, gap.by) + 130 || since > Gaps.FAIL_AFTER;
   };
 
-  /* THE LEASH. The plank machine and the ruler keys stand between the held
-     truck and the drop, so the truck is held CHASM.STOP back - 470px further
-     than the run-up every chasm was tuned with. Floored from there it would
-     reach the lip at ~620px/s instead of ~410: fast enough to sail over a
-     too-long plank's chute onto the far lip, which is the wrong lesson. So
-     the throttle eases off at LEASH_V - the speed a floored truck used to
-     arrive with (410-415px/s over the old 250px run-up, every chasm of every
-     stage) - until the rear axle is over the far lip. Letting go at the near
-     lip instead puts full throttle on just as the front wheels leave the
-     rock, which lifts the nose into a jump (raw wrong-plank crossings in the
-     stage test: 2 before the machine; from this stop 9 unleashed, 3 leashed
-     to the near lip, 2 leashed to the far lip - the same steep chasm that
-     always had them). Gravity still speeds a truck down a falling plank, and
-     anything slower than LEASH_V - a climb up a rising one - gets full
-     power. Returns `input` itself when there is nothing to hold back. */
-  Gaps.LEASH_V = 412;
+  /* THE LEASH. The saw and the generator console stand between the held
+     truck and the drop, so the truck is held well back - 440 to 960px (see
+     holdFor) against the 250px run-up every chasm was tuned with. Floored
+     from there it would reach the lip at 520-700px/s instead of ~410: fast
+     enough to sail over a too-long plank's chute onto the far lip, which is
+     the wrong lesson. So the throttle eases off at LEASH_V - about the speed
+     a floored truck used to arrive with (410-415px/s over the old 250px
+     run-up) - until the rear axle is over the far lip; letting go at the
+     near lip instead puts full throttle on just as the front wheels leave
+     the rock, which lifts the nose into a jump. Gravity still speeds a
+     truck down a falling plank, and anything slower than LEASH_V - a climb
+     up a rising one - gets full power. Returns `input` itself when there is
+     nothing to hold back.
+     A caution for whoever tunes this: without the scripted nudges (the
+     stage test's "raw" run) a handful of too-long planks on 3-4-5 chasms are
+     knife-edge - the front wheels just do or just do not catch the far lip -
+     and the count swings between 2 and 14 with a few px/s of LEASH_V or of
+     the throttle band. 400/20 measured 2, as before the machine. In the game
+     it cannot matter: the long plank's wall flip always makes a miss a miss. */
+  Gaps.LEASH_V = 400;
   Gaps.leash = function (v, gap, input) {
     if (!(input.gas > 0) || v.x + CG.VConst.axleRear.x * v.ca >= gap.bx) return input;
     var k = CG.clamp((Gaps.LEASH_V - v.forwardSpeed()) / 20, 0, 1);
@@ -3151,14 +3217,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      points, one below the lower of them (or the x-axis, whichever is lower),
      and enough above the higher one for its label. A bigger pane was more
      glass, more lines and more numbers to read past to find two points. */
-  /* The plane's extent: both points and the origin, a unit of margin either
-     side, two rows below the lower point and three above the higher (room
-     for its label and the y arrow). */
-  R.gridRange = function (gap) {
-    return { minGX: Math.min(gap.a[0], gap.b[0], 0) - 1,
-             maxGX: Math.max(gap.a[0], gap.b[0], 0) + 1 + (gap.padR || 0),   // see gapFrame
-             minGY: Math.min(gap.a[1], gap.b[1], 0) - 2, maxGY: Math.max(gap.a[1], gap.b[1], 0) + 3 };
-  };
+  /* The plane's extent (CG.Gaps.gridRange), with the spare columns the
+     camera gave it this frame (gap.padR, see gapFrame). */
+  R.gridRange = function (gap) { return CG.Gaps.gridRange(gap, gap.padR || 0); };
   R.gridBox = function (gap) {
     var U = CG.UNIT, z = R.cam.z, r = R.gridRange(gap);
     var minGX = r.minGX, maxGX = r.maxGX, minGY = r.minGY, maxGY = r.maxGY;
@@ -3227,11 +3288,13 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     c.drawImage(cv, plane.x, plane.y, plane.w, plane.h);
   };
 
-  /* THE PALETTE - "soft purple": lavender rules (#D3C6F2), purple axes
-     (#5B3F9B), the coordinates in deep purple (#4A2E7A) on white pills
+  /* THE PALETTE - "soft purple": lavender rules (#D3C6F2), faded purple axes
+     (#5B3F9B at 40%), the coordinates in deep purple (#4A2E7A) on white pills
      edged in violet (#A66BE5), and orange (X_COL, #FF9F1C) for the data -
      the two points and the span between them. */
-  var GRID_LINE = '#D3C6F2', AXIS_COL = '#5B3F9B', AXIS_LETTER = '#5B3F9B';
+  /* the axes are the palette's purple, faded right back: a scale to read
+     when wanted, never louder than the two points */
+  var GRID_LINE = '#D3C6F2', AXIS_COL = 'rgba(91,63,155,0.4)', AXIS_LETTER = 'rgba(91,63,155,0.55)';
   var COORD_TEXT = '#4A2E7A', LABEL_EDGE = '#A66BE5', SHEET_EDGE = 'rgba(166,107,229,0.55)';
   /* See-through by day, so the world - the truck, the machine, the hole -
      reads through it and the sheet is a tracing laid over the scene rather
@@ -3624,6 +3687,18 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       var cl = P.caps[0], cr = P.caps[1], hs = tw / P.tiles[0][1];
       c.drawImage(im, cl[0], 0, cl[1], P.h, -L / 2, top, cl[1] * hs, hh);
       c.drawImage(im, cr[0], 0, cr[1], P.h, L / 2 - cr[1] * hs, top, cr[1] * hs, hh);
+      if (pose.bad > 0) {                              // a wrong board, gone red
+        c.save();
+        c.globalCompositeOperation = 'multiply';
+        c.globalAlpha *= pose.bad;
+        R.roundRect(-L / 2, 1, L, T - 2, (T - 2) / 2); c.fillStyle = '#FF6A5C'; c.fill();
+        c.restore();
+        c.save();
+        c.globalAlpha *= pose.bad;
+        R.roundRect(-L / 2 - 1.5, -1.5, L + 3, T + 3, (T + 3) / 2);
+        c.lineWidth = 3; c.strokeStyle = 'rgba(255,70,58,0.95)'; c.stroke();
+        c.restore();
+      }
       if (label) {
         c.rotate(-pose.ang);
         haloText(label, 0, -24, 18, '#FFFFFF', 'center', 'rgba(27,42,94,0.7)');
@@ -3678,10 +3753,53 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var M = CG.MACHINE, W = CG.CHASM;
     if (!M.w) return null;
     var k = W.MACH_W / M.w;
-    var x0 = g.ax - W.MACH_OUT - M.outfeed * k, y0 = g.ay - M.feet * k;
+    var x0 = CG.Gaps.machineRight(g) - M.outfeed * k, y0 = g.ay - M.feet * k;
     return { k: k, x0: x0, y0: y0, left: x0, right: x0 + M.w * k, top: y0,
              bladeX: x0 + M.blade[0] * k, bladeY: y0 + M.blade[1] * k, bladeR: M.blade[2] * k,
              beltY: y0 + M.belt * k, outX: x0 + M.outfeed * k };
+  };
+
+  /* The wrong-plank cross: a red disc with a white X, popping in over where
+     the board failed and fading as the screen goes dark for the reset. */
+  R.drawBadMark = function (b) {
+    var c = R.ctx, t = b.t, z = R.cam.z;
+    if (t > 1.3) return;
+    var k = CG.clamp(t / 0.22, 0, 1), s = 1 + 2.7 * Math.pow(k - 1, 3) + 1.7 * Math.pow(k - 1, 2);
+    var x = R.sx(b.x), y = R.sy(b.y) - 48 * z, r = Math.max(16, 24 * z) * s;
+    if (r <= 0) return;
+    c.save();
+    c.globalAlpha = CG.clamp((1.3 - t) / 0.3, 0, 1);
+    var gl = c.createRadialGradient(x, y, r * 0.6, x, y, r * 2.3);
+    gl.addColorStop(0, 'rgba(255,60,50,0.45)'); gl.addColorStop(1, 'rgba(255,60,50,0)');
+    c.fillStyle = gl; c.fillRect(x - r * 2.3, y - r * 2.3, r * 4.6, r * 4.6);
+    c.beginPath(); c.arc(x, y, r, 0, CG.TAU);
+    c.fillStyle = '#FF4D4D'; c.fill();
+    c.lineWidth = Math.max(2.5, r * 0.13); c.strokeStyle = '#FFFFFF'; c.stroke();
+    c.lineCap = 'round'; c.lineWidth = Math.max(3.5, r * 0.2);
+    c.beginPath();
+    c.moveTo(x - r * 0.4, y - r * 0.4); c.lineTo(x + r * 0.4, y + r * 0.4);
+    c.moveTo(x + r * 0.4, y - r * 0.4); c.lineTo(x - r * 0.4, y + r * 0.4);
+    c.stroke();
+    c.restore();
+  };
+
+  /* The reverse blocker (see backLimit in the game): a tyre stack between
+     two cones on the road behind the truck, rising out of the ground as the
+     truck backs towards it - `k` 0..1 is how close it is. */
+  R.drawBlocker = function (x, k) {
+    if (k <= 0.01) return;
+    var I = CG.img, c = R.ctx, z = R.cam.z;
+    var up = k * k * (3 - 2 * k), parts = [['cone', -40, 36], ['tyres', 0, 60], ['cone', 40, 36]];
+    c.save();
+    c.globalAlpha = Math.min(1, k * 1.6);
+    for (var i = 0; i < parts.length; i++) {
+      var im = I[parts[i][0]];
+      if (!im) continue;
+      var px = x + parts[i][1], gy = CG.Terrain.y(px), hh = parts[i][2] * (0.55 + 0.45 * up);
+      var ww = hh * im.width / im.height;
+      c.drawImage(im, R.sx(px) - ww * z / 2, R.sy(gy) - (hh - 5) * z, ww * z, hh * z);
+    }
+    c.restore();
   };
 
   /* The machine in layers, back to front: the body with its parts out, the
@@ -3699,7 +3817,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     if (f.right < R.cam.x - (R.W / 2 + 60) / R.cam.z || f.left > R.cam.x + (R.W / 2 + 60) / R.cam.z) return;
     var c = R.ctx, z = R.cam.z, k = f.k;
     var dy = st.sink * (M.feet + 8) * k;
-    var jx = st.jolt ? (Math.random() - 0.5) * st.jolt : 0, jy = st.jolt ? (Math.random() - 0.5) * st.jolt * 0.6 : 0;
+    /* a shake is a smooth wobble, not per-frame noise: two sines off the clock */
+    var jx = st.jolt ? st.jolt * 0.5 * Math.sin(st.clock * 57) : 0;
+    var jy = st.jolt ? st.jolt * 0.3 * Math.sin(st.clock * 43 + 1.3) : 0;
     function frame() {
       c.translate(R.sx(f.x0 + jx), R.sy(f.y0 + dy + jy));
       c.scale(z * k, z * k);
@@ -4337,7 +4457,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     mode: 'stage',           // stage | endless
     v: null,
     stageIdx: 0, stage: null, track: null,
-    time: 0, dist: 0, coins: 0, fuel: 100, safety: 0,
+    time: 0, dist: 0, coins: 0, fuel: 100, safety: 0, clock: 0, idleT: 0, blockGlow: 0, maxX: 0, lastX: 0,
     lives: 3, cpIdx: -1, cpX: 0, progress: 0,
     stars: 0, wonStars: 0, winT: 0,
     best: 0, bank: 0,
@@ -4439,6 +4559,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     G.v.headLean = 0;
     G.time = 0; G.dist = 0; G.coins = 0; G.runCoins = 0;
     G.safety = 0; G.boostT = 0; G.deadT = 0; G.invuln = 0;
+    G.idleT = 0; G.blockGlow = 0; G.maxX = G.lastX = x;
     G.reason = ''; G.newBest = false; G.stars = 0; G.wonStars = 0; G.winT = 0;
     G.progress = 0;
     G.freePlay = G.mode === 'endless'; G.freeT = 0; G.freeX0 = x / CG.PPM;
@@ -4655,34 +4776,56 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   var PLACE_T = 0.6, FAIL_T = 1.05, FADE_T = 0.45;
 
   /* THE MACHINE'S RUN (phase spawn), from the moment the length is chosen:
-     the lever snaps down and the blade winds up to speed (UP); the plank
-     feeds out through the blade, one unit per UNIT_T (sped up so no plank
-     takes longer than FEED_MAX), with a tick and a spray of chips as each
-     strap passes the teeth; the belt then pushes the cut board out until its
-     tail is at the outfeed - cantilevered over the hole - and it settles
-     there a beat before the drop. Blade speeds are in revolutions a second:
-     it idles while it waits, and the motion-blurred sprite takes over above
-     BLUR0. */
-  var MACH = { UP: 0.38, UNIT_T: 0.17, FEED_MAX: 1.35, PUSH_V: 700, SETTLE: 0.12,
+     the lever snaps down and the blade winds up to speed (UP); then the
+     board rides the belt out through the blade and on until its tail is at
+     the outfeed - cantilevered over the hole - in ONE smooth move: it eases
+     up to speed over ACC, cruises at a unit per UNIT_T (faster for a plank
+     that would take longer than FEED_MAX) and eases to a stop. Each strap
+     that passes the teeth ticks and throws chips; the chop is the tail
+     clearing them. It settles a beat, then drops. Blade speeds are in
+     revolutions a second: it idles while it waits, and the motion-blurred
+     sprite takes over above BLUR0. */
+  var MACH = { UP: 0.38, UNIT_T: 0.2, FEED_MAX: 1.5, ACC: 0.2, SETTLE: 0.16,
                IDLE: 0.6, FULL: 7, BLUR0: 2.2, BLUR1: 4.5, SINK_T: 0.42 };
 
   function machineRun(q) {
     var f = R.machineFrame(q.g), p = q.plank, L = Math.hypot(p.x1 - p.x0, p.y1 - p.y0);
-    var feedV = Math.max(CG.UNIT / MACH.UNIT_T, L / MACH.FEED_MAX);
-    var feedEnd = MACH.UP + L / feedV;
-    var pushEnd = feedEnd + (f ? f.outX - f.bladeX : 0) / MACH.PUSH_V;
-    return { L: L, feedV: feedV, feedEnd: feedEnd, pushEnd: pushEnd, end: pushEnd + MACH.SETTLE,
-             units: 0, chipT: 0, chopped: false };
+    var S = L + (f ? f.outX - f.bladeX : 0);                    // out through the blade, on to the outfeed
+    var v = Math.max(CG.UNIT / MACH.UNIT_T, L / MACH.FEED_MAX);
+    var r = { L: L, S: S, v: v, T: S / v + MACH.ACC, units: 0, unitT: -1, chipT: 0, chopped: false };
+    r.chopT = MACH.UP + travelTime(r, L);
+    r.end = MACH.UP + r.T + MACH.SETTLE;
+    return r;
+  }
+
+  /* The belt's move as distance at time `tau` into it: a trapezoid of speed
+     (up over ACC, cruise at v, down over ACC), so it starts and stops
+     without a jolt. travelTime is its inverse, travelV its speed. */
+  function travel(r, tau) {
+    var a = MACH.ACC, v = r.v;
+    if (tau <= 0) return 0;
+    if (tau < a) return 0.5 * v / a * tau * tau;
+    if (tau < r.T - a) return v * (tau - a / 2);
+    if (tau < r.T) return r.S - 0.5 * v / a * (r.T - tau) * (r.T - tau);
+    return r.S;
+  }
+  function travelTime(r, s) {
+    var a = MACH.ACC, v = r.v;
+    if (s <= 0.5 * v * a) return Math.sqrt(2 * s * a / v);
+    if (s <= r.S - 0.5 * v * a) return s / v + a / 2;
+    return r.T - Math.sqrt(Math.max(0, 2 * (r.S - s) * a / v));
+  }
+  function travelV(r, tau) {
+    var a = MACH.ACC;
+    if (tau <= 0 || tau >= r.T) return 0;
+    return r.v * Math.min(1, tau / a, (r.T - tau) / a);
   }
 
   /* Where the board is while the machine has it: riding the belt, its front
-     end `fed` px past the blade, then pushed on until its tail meets the
-     outfeed. The renderer clips it at the blade. */
+     end `travel` px past the blade. The renderer clips it at the blade. */
   function feedPose(q, t) {
-    var f = R.machineFrame(q.g), r = q.run, L = r.L, front;
-    if (t <= r.feedEnd) front = f.bladeX + CG.clamp((t - MACH.UP) * r.feedV, 0, L);
-    else front = f.bladeX + L + Math.min((t - r.feedEnd) * MACH.PUSH_V, f.outX - f.bladeX);
-    return { x: front - L / 2, y: f.beltY - R.PLANK_T, ang: 0, len: L };
+    var f = R.machineFrame(q.g), r = q.run, front = f.bladeX + travel(r, t - MACH.UP);
+    return { x: front - r.L / 2, y: f.beltY - R.PLANK_T, ang: 0, len: r.L };
   }
 
   function newMachine() {
@@ -4701,10 +4844,10 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     m.cog -= m.spin * CG.TAU * 1.7 * dt;          // the small cog turns faster, the other way
     /* rollers: carried round by whatever is on the belt (omega = v / r),
        otherwise crawling with the motor */
-    var beltV = cutting && t > MACH.UP ? (t < r.feedEnd ? r.feedV : t < r.pushEnd ? MACH.PUSH_V : 0) : 0;
+    var beltV = cutting ? travelV(r, t - MACH.UP) : 0;
     m.roll += (beltV / (CG.MACHINE.roller[0] * f.k) + m.spin * 1.2) * dt;
     /* the lever is a spring: snapped down on the answer, back up after the cut */
-    var lt = cutting && t < r.feedEnd ? 1 : 0;
+    var lt = cutting && t < r.chopT ? 1 : 0;
     m.leverV += ((lt - m.lever) * 320 - m.leverV * 15) * dt;
     m.lever += m.leverV * dt;
     m.sqV += (-m.squash * 420 - m.sqV * 13) * dt;
@@ -4755,6 +4898,16 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     return null;
   }
 
+  /* The truck's hold, re-planned for THIS screen and this question's lines
+     of tips (Gaps.holdFor plans a 16:9 landscape by default, which is what
+     the stage test drives): a phone held upright frames the row tighter, and
+     needs the truck further back for the console to fit beside the saw.
+     Early enough that the auto-brake just aims for it. */
+  function replanHold(q) {
+    var g = q.g;
+    g.stopX = g.ax - CG.Gaps.holdFor(g, R.W, R.H, subLines(q));
+  }
+
   function armGap(v) {
     if (G.gap) return;
     var g = nextChasm();
@@ -4763,7 +4916,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
               wrong: {}, hint: false, fade: 0, tipped: false, pose0: null,
               grid: 0, axes: 0, ptA: 0, ptB: 0, panel: 0, rulerIn: 0,
               reveal: 0, out: 1, beat: 0, run: null, mach: newMachine(),
-              ruler: { open: 0, target: 0, cursor: 0, value: 0, keyT: 0 } };
+              ruler: { open: 0, target: 0, cursor: 0, value: 0, keyT: 0, down: false } };
+    replanHold(G.gap);
     /* The driver sees it and stands on the brake. The faster the arrival, the
        bigger the moment: a screech, smoke off both tyres, a kick through the
        camera. A car already crawling gets the screech and nothing else. */
@@ -4812,6 +4966,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     }
     q.ruler.open = CG.approach(q.ruler.open, q.ruler.target, 10, dt);
     if (q.ruler.keyT > 0) q.ruler.keyT -= dt;
+    if (q.bad) q.bad.t += dt;
     stepMachine(q, dt);
     switch (q.phase) {
       case 'approach': {
@@ -4866,24 +5021,25 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
         var r = q.run, m = q.mach, f = R.machineFrame(g);
         if (!f) { q.pose0 = { x: (q.plank.x0 + q.plank.x1) / 2, y: g.ay - 90, ang: 0 }; q.phase = 'place'; q.t = 0; return COAST; }
         var cutX = f.bladeX + f.bladeR * 0.8, cutY = f.beltY - R.PLANK_T * 0.6;
-        if (q.t > MACH.UP && q.t < r.feedEnd) {
-          var units = Math.min(q.len, Math.floor((q.t - MACH.UP) * r.feedV / r.L * q.len + 1e-6));
+        var fed = travel(r, q.t - MACH.UP);
+        if (fed > 0 && fed < r.L) {
+          var units = Math.min(q.len, Math.floor(fed / r.L * q.len + 1e-6));
           if (units > r.units) {
-            r.units = units;
+            r.units = units; r.unitT = q.t;
             A.sfx('tick', { rate: Math.pow(2, Math.min(12, units - 1) / 12) });   // the count climbs
             FX.chips(cutX, cutY, 4);
-            m.jolt = Math.max(m.jolt, 1.6);
+            m.jolt = Math.max(m.jolt, 1.2);
           }
           r.chipT -= dt;
           if (r.chipT <= 0) { r.chipT = 0.045; FX.chips(cutX, cutY, 1); }
         }
-        if (!r.chopped && q.t >= r.feedEnd) {
+        if (!r.chopped && fed >= r.L) {
           /* the last unit is done the instant the cut is: its tick rides
              with the chop, so the ear hears as many ticks as there are units */
           if (r.units < q.len) A.sfx('tick', { rate: Math.pow(2, Math.min(12, q.len - 1) / 12) });
-          r.chopped = true; r.units = q.len;
+          r.chopped = true; r.units = q.len; r.unitT = q.t;
           A.sfx('chop'); FX.chips(cutX, cutY, 7);
-          m.jolt = Math.max(m.jolt, 3); m.sqV -= 2.2;
+          m.jolt = Math.max(m.jolt, 2.2); m.sqV -= 1.8;
         }
         if (q.t >= r.end) {
           /* off the end of the belt: the drop starts from exactly here */
@@ -4931,7 +5087,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     /* the lever goes down, the motor catches */
     q.mach.leverV = 9; q.mach.sqV = -2.4;
     A.sfx('lever');
-    A.saw(MACH.UP, q.run.feedEnd - MACH.UP);
+    A.saw(MACH.UP, q.run.chopT - MACH.UP);
   };
 
   function ease(k) { k = CG.clamp(k, 0, 1); return k * k * (3 - 2 * k); }
@@ -4955,7 +5111,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      between the lips a moment before it touches. Every term lands exactly
      on the placed pose at t = PLACE_T, so the hand-off to the terrain has
      no jump. */
-  var FALL_HOP = 30;
+  var FALL_HOP = 42;
   function fallPose(q, t, L, tx, ty, ang1) {
     var k = CG.clamp(t / PLACE_T, 0, 1), p0 = q.pose0;
     var kx = 1 - (1 - k) * (1 - k);
@@ -4999,18 +5155,61 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     R.shake = Math.max(R.shake, 12);
   }
 
+  /* A WRONG PLANK SAYS SO WITHOUT WORDS: the board goes red, a red cross
+     pops where it failed (the end that ran out, or the end that wedged),
+     and the edges of the screen flush red for a moment. No "too short" or
+     "too long" - the board falling or the truck going over says which. */
+  function markWrong(q, x, y) {
+    q.bad = { t: 0, x: x, y: y };
+    R.shake = Math.max(R.shake, 10);
+  }
+
+  /* A NEW SET OF POINTS after a miss. The lips cannot move - they are the
+     ground under the truck - so the plane slides under them instead: the
+     origin shifts by whole units and both points take new coordinates, the
+     same distance apart. The numbers change, so the length has to be worked
+     out again rather than picked by elimination. The shift keeps the plane
+     compact (the origin near the points), keeps the span off the axes where
+     it can, and never repeats a set this hole has already shown. Seeded by
+     the hole and the try, so a replay asks the same things. */
+  function newPoints(q) {
+    var g = q.g, U = CG.UNIT, rnd = CG.rng(((g.index + 1) * 7919 + q.tries * 104729) >>> 0);
+    var best = null, tx, ty;
+    q.shown = q.shown || {};
+    q.shown[g.a + '|' + g.b] = 1;
+    function onAxis(p) { return p[0] === 0 || p[1] === 0 ? 1.5 : 0; }
+    for (tx = -4; tx <= 4; tx++) for (ty = -4; ty <= 4; ty++) {
+      var a = [g.a[0] + tx, g.a[1] + ty], b = [g.b[0] + tx, g.b[1] + ty];
+      if (q.shown[a + '|' + b]) continue;
+      var w = Math.max(a[0], b[0], 0) - Math.min(a[0], b[0], 0);
+      var hh = Math.max(a[1], b[1], 0) - Math.min(a[1], b[1], 0);
+      var s = w + 1.5 * hh + onAxis(a) + onAxis(b) + 3 * rnd();
+      if (!best || s < best.s) best = { s: s, a: a, b: b };
+    }
+    if (!best) return;
+    g.a = best.a; g.b = best.b;
+    g.ox = g.ax - g.a[0] * U; g.oy = g.ay + g.a[1] * U;
+    g.q = CG.Gaps.question(g);
+    replanHold(q);                            // a new plane is a new row: the saw and the hold move with it
+  }
+
   function resetGap() {
     var q = G.gap, g = q.g, v = G.v;
     CG.Terrain.setPlanks(CG.Terrain.planks.filter(function (p) { return p !== q.plank; }));
-    q.plank = null; q.tipped = false; q.run = null;
+    q.plank = null; q.tipped = false; q.run = null; q.bad = null;
     q.ruler.value = 0; q.ruler.cursor = 0;
     q.mach = newMachine();               // stood back up while the screen is black
+    /* a fresh question for the same hole, so nothing on the ruler is
+       crossed out any more */
+    newPoints(q);
+    q.wrong = {};
     v.reset(g.stopX);
     clearCrash(v);
     holdCar(v);
-    /* straight back to the question: the build-up is for the first arrival */
+    /* back to the question: the plane is already up, the new points land on
+       it one after the other as the screen clears */
     q.phase = 'ask'; q.t = 0; q.fade = 1;
-    q.reveal = REVEAL_DONE; q.beat = 3;
+    q.reveal = REVEAL.ptA; q.beat = 1;
   }
 
   function solveGap() {
@@ -5055,7 +5254,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
         q.tipped = true; q.tipT = q.t;
         Gp.boardGives(v);
         A.sfx('wrong');
-        FX.text(v.x, v.y - 100, 'TOO SHORT!', '#EF5350', true);
+        markWrong(q, p.x1, p.y1);                      // where it ran out
       }
       if (q.tipped) {
         Gp.tipPlank(p, dt);                            // the board gives way under the car
@@ -5065,9 +5264,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       if (!q.tipped && Gp.longTripped(v, p)) {
         q.tipped = true; q.tipT = q.t;
         Gp.wallFlip(v);                                // into the wall, over the nose
-        A.sfx('crash'); R.shake = Math.max(R.shake, 14);
+        A.sfx('crash'); A.sfx('wrong'); R.shake = Math.max(R.shake, 14);
         for (k = 0; k < 8; k++) FX.dust(p.x1, v.y, -80, -40, 1);
-        FX.text(v.x, v.y - 100, 'TOO LONG!', '#EF5350', true);
+        markWrong(q, p.x1, p.y1);                      // where it wedged
       }
     }
     if (q.tipped && Gp.failed(v, g, q.t - q.tipT)) failGap();
@@ -5115,6 +5314,16 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   function updatePlay(dt) {
     var v = G.v, i, w, force = null;
 
+    /* idle: a free truck with no pedal down (see nudgeWanted) */
+    var free = !G.gap || G.gap.phase === 'drive' || G.gap.phase === 'done';
+    if (!free || G.input.gas > 0 || G.input.brake > 0) G.idleT = 0; else G.idleT += dt;
+    /* the blocker's reference: the furthest the truck has got - restarted
+       wherever the game puts it back (a respawn, a chasm reset: any jump
+       backwards bigger than a frame's worth of driving) */
+    if (v.x < G.lastX - 150) G.maxX = v.x;
+    G.maxX = Math.max(G.maxX, v.x);
+    G.blockGlow = G.input.gas > 0 ? 0 : Math.max(0, G.blockGlow - dt);
+
     if (G.mode === 'endless') CG.Endless.ensure(v.x);
     if (G.track || G.mode === 'endless') armGap(v);
     if (G.gap) {
@@ -5135,8 +5344,20 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     if (G.invuln > 0) G.invuln -= dt;
 
     var wasAir = v.airTime;
+    /* THE BLOCKER: at the limit, reverse does nothing (the brake still
+       brakes a truck rolling forward) */
+    var lim = backLimit();
+    if (!force && free && G.input.brake > 0 && v.x <= lim + 6 && v.forwardSpeed() < 40) {
+      force = { gas: G.input.gas, brake: 0, boost: false };
+      G.blockGlow = 1.2;
+    }
     stepPhysics(dt, true, force);
     if (G.gap) gapAfterStep(dt);
+    if (free && v.x < lim) {               // rolled into it: it holds
+      v.x = lim; if (v.vx < 0) v.vx = 0;
+      G.blockGlow = 1.2;
+    }
+    G.lastX = v.x;
 
     /* fuel */
     var eff = force || G.input;
@@ -5272,27 +5493,13 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var U = CG.UNIT, W = R.W, H = R.H, left, right, top, bottom, z;
     var lipY = (g.ay + g.by) / 2;
     if (mode === 'tight') {
-      g.padR = 0;
-      var r = R.gridRange(g);
-      var paneR = g.ox + (r.maxGX + 0.5) * U, paneT = g.oy - (r.maxGY + 0.5) * U;
-      var paneB = g.oy - (r.minGY - 0.5) * U;
-      left = Math.min(v.x, g.stopX) - 150;       // the truck's tail
-      right = paneR + 26;
-      top = paneT - 10;
-      bottom = paneB + 10;
-      var bandT = 100 + 44 * subLines(G.gap), bandB = H - 84;   // under the question, over the grass
-      var zV = (bandB - bandT) / (bottom - top), zH = 0.97 * W / (right - left);
-      /* Height-bound (a short gap on a wide screen): the spare width becomes
-         more plane to the right - more columns to count along, and a
-         composition that fills the screen instead of leaving a third of it
-         empty. */
-      if (zV < zH) {
-        g.padR = CG.clamp(Math.floor((0.97 * W / Math.min(zV, 1.4) - (right - left)) / U), 0, 4);
-        right += g.padR * U;
-      }
-      z = CG.clamp(Math.min(0.97 * W / (right - left), zV), 0.5, 1.4);
-      return { x: (left + right) / 2, z: z,
-               y: (top + bottom) / 2 - ((bandT + bandB) / 2 - H / 2) / z };
+      /* the plane whole, as large as the screen allows, the truck's tail at
+         the left edge (see CG.Gaps.tightFrame - the same numbers the row at
+         the gap was planned with) */
+      var tf = CG.Gaps.tightFrame(g, Math.min(v.x, g.stopX) - 150, W, H, subLines(G.gap));
+      g.padR = tf.padR;
+      return { x: (tf.left + tf.right) / 2, z: tf.z,
+               y: (tf.top + tf.bottom) / 2 - ((tf.bandT + tf.bandB) / 2 - H / 2) / tf.z };
     }
     var wide = mode === 'wide';
     left = Math.min(v.x, g.stopX) - (wide ? 260 : 170);
@@ -5389,11 +5596,25 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      game. They now carry a solid disc, a drop shadow to lift them off the
      ground texture, and a ring in their own action colour so gas and brake are
      told apart by colour rather than by which side of the screen they are on. */
-  function pedal(cx, cy, rad, dir, down) {
+  /* `glow` 0..1: a soft green halo that breathes round the pedal - the
+     nudge to press it (idle too long, paused, or backed into the blocker) */
+  function pedal(cx, cy, rad, dir, down, glow) {
     var c = R.ctx;
     btn(dir > 0 ? 'gas' : 'brake', cx - rad, cy - rad, rad * 2, rad * 2, rad);
     var hue = dir > 0 ? '#7CB342' : '#E53935';
     c.save();
+    if (glow > 0.01 && !down) {
+      var br = 0.5 + 0.5 * Math.sin(G.clock * 4.2);          // breathing, ~0.7 Hz
+      var gr = rad * (1.28 + 0.14 * br);
+      var hg = c.createRadialGradient(cx, cy, rad * 0.85, cx, cy, gr + rad * 0.35);
+      hg.addColorStop(0, 'rgba(174,234,90,' + (glow * (0.42 + 0.28 * br)).toFixed(3) + ')');
+      hg.addColorStop(1, 'rgba(174,234,90,0)');
+      c.fillStyle = hg;
+      c.beginPath(); c.arc(cx, cy, gr + rad * 0.35, 0, CG.TAU); c.fill();
+      c.beginPath(); c.arc(cx, cy, rad + 5 + 3 * br, 0, CG.TAU);
+      c.lineWidth = 3; c.strokeStyle = 'rgba(214,255,150,' + (glow * (0.5 + 0.35 * br)).toFixed(3) + ')';
+      c.stroke();
+    }
     c.beginPath(); c.arc(cx, cy, rad, 0, CG.TAU);
     c.shadowColor = 'rgba(20,14,8,0.55)';
     c.shadowBlur = 14;
@@ -5514,21 +5735,51 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      out: the world is waiting and none of it can change. The fuel gauge is
      also absent through free play, when the tank does not drain - it arrives
      with the first gap, as the run's one real constraint. */
-  var hudA = 1, fuelA = 0;
+  var hudA = 1, fuelA = 0, nudgeA = 0;
   function focusOnGap() { return !!(G.gap && G.gap.phase !== 'done'); }
+
+  /* THE NUDGE: a glow on the forward pedal when the game wants it pressed -
+     after IDLE_T seconds of a free truck with no pedal down, all through a
+     pause (a pause has no menu: forward is how you carry on), and while the
+     truck is backed up against the blocker (see backLimit). */
+  var IDLE_T = 4;
+
+  /* THE BLOCKER. Reversing is for a run-up or a correction, not for driving
+     the course backwards: the truck can back up BACK_RUN px behind the
+     furthest it has got, and there a barrier (cones and a tyre stack) rises
+     behind it and holds it - and the forward pedal glows. */
+  var BACK_RUN = 480;
+  function backLimit() { return G.maxX - BACK_RUN; }
+  var TAIL_X = Math.min.apply(null, V.hull.map(function (p) { return p.x; }));   // the tailgate, behind the centre
+  function drawBlocker() {
+    var v = G.v, lim = backLimit();
+    R.drawBlocker(lim + TAIL_X - 16, CG.clamp(1 - (v.x - lim) / 320, 0, 1));
+  }
+
+  function nudgeWanted() {
+    if (G.state === 'paused') return 1;
+    if (G.state !== 'play') return 0;
+    if (G.blockGlow > 0) return 1;
+    return G.idleT >= IDLE_T ? 1 : 0;
+  }
 
   function drawHUD(dt) {
     var c = R.ctx, W = R.W, i;
     var stage = G.mode === 'stage' && G.track;
     /* a menu (paused, results) is its own focus: the chip would only repeat
        the results and the gauge would peek out from under the hanging sign */
-    var focus = focusOnGap() || G.state !== 'play';
+    var focus = focusOnGap() || (G.state !== 'play' && G.state !== 'paused');
     hudA = CG.approach(hudA, focus ? 0 : 1, 6, dt || 0.016);
     fuelA = CG.approach(fuelA, focus || G.freePlay ? 0 : 1, 4, dt || 0.016);
-    /* a single heart says nothing, so the endless run's one life is not shown;
-       the row appears once there is a second heart to count */
+    var nw = nudgeWanted();                          // eases in, lets go quickly
+    nudgeA = CG.approach(nudgeA, nw, nw > nudgeA ? 3 : 8, dt || 0.016);
+    /* Every heart that can still save the truck, and nothing else: a stage's
+       lives plus the saves picked up on the way (endless has no spare life,
+       so there it is the saves alone). Endless used to hide a single heart,
+       taking it for the run's own life - but it was a save, so spending one
+       of two made both vanish, and the hidden one still saved the next
+       crash. Each save now shows, and each crash takes exactly one. */
     var hearts = (stage ? G.lives : 0) + G.safety;
-    if (!stage && hearts < 2) hearts = 0;
 
     c.save();
     c.globalAlpha = hudA;
@@ -5617,18 +5868,17 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       c.restore();
     }
 
-    /* top-right buttons, in the corner on the chip's line, where the title
-       screen keeps its mute - they never move when the gauge comes and goes */
-    iconBtn('pause', W - 46, 40, 26, 'iconPause', false);
-    iconBtn('mute', W - 108, 40, 26, G.muted ? 'soundOff' : 'soundOn', false);
+    /* No pause or sound button up here any more: the corner belongs to the
+       road. Pause is P / Esc (or leaving the tab) and the forward pedal is how
+       you carry on; sound is M, and the title screen keeps its speaker. */
 
-    /* pedals — only while driving, so they cannot be mistaken for live
-       controls on the pause or game-over screens */
+    /* pedals — while driving, and while paused: a pause has no menu, just the
+       forward pedal glowing to say "press to carry on" (see G.nudge) */
     var held = G.gap && G.gap.phase !== 'drive' && G.gap.phase !== 'done';
-    if (G.state === 'play' && !held) {
+    if ((G.state === 'play' && !held) || G.state === 'paused') {
       var py = R.H - 96, pr = 62;
-      pedal(104, py, pr, -1, G.input.brake > 0);
-      pedal(W - 104, py, pr, 1, G.input.gas > 0);
+      if (!held) pedal(104, py, pr, -1, G.input.brake > 0);
+      pedal(W - 104, py, pr, 1, G.input.gas > 0, nudgeA);
     }
 
     /* boost flash */
@@ -5656,6 +5906,12 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      part that has to clear the truck - and the truck's frontmost point, the
      bull bar, ahead of its centre */
   var RULER_OVER = (RULER_W - RULER_BOX) / 2 + 6;
+  /* the generator console round the display and the button: its margin, and
+     the hazard band along its foot */
+  var CON_PAD = 8, CON_BASE = 10;
+  /* the gap either side of the console in the row truck | console | saw -
+     CG.CHASM.KEYS_ROOM is planned from it: RULER_OVER + the console + 2 gaps */
+  var ROW_GAP = 14;
   var NOSE_X = Math.max.apply(null, V.hull.map(function (p) { return p.x; }));
 
   /* Where the box sits: at roof height, ahead of the jeep, clear of the
@@ -5665,43 +5921,56 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      and just outside it - the plane is the thing to look at, and the keys
      must never sit on it, nor on the machine that cuts the plank. */
   function rulerAnchor() {
-    var v = G.v, z = R.cam.z, N = CG.Gaps.RULER_MAX, q = G.gap;
-    var keysW = RULER_BOX * 2 + 10;
+    var v = G.v, z = R.cam.z, q = G.gap;
+    var keysW = RULER_BOX * 2 + 10 + CON_PAD;          // display, button, and the console's right margin
     var x = R.sx(v.x) + 126 * z, y = R.sy(v.y) - 44 * z;
     if (q && q.g) {
-      /* In the clear road between the truck's bull bar and the machine,
-         centred. The ruler overhangs the value box by RULER_OVER on its left,
-         so that is what must clear the truck. Where the road is too short to
-         hold them (a squeezed portrait screen) they keep off the truck and
-         give way on the machine's side. */
+      /* In the row, between the truck's bull bar and the saw: the truck was
+         held so this road is exactly the console's width plus a ROW_GAP each
+         side (CG.Gaps.holdFor), so it sits snug against both - centred, when
+         the camera came out tighter than planned and left a little over. The
+         ruler overhangs the display by RULER_OVER on its left, so that is
+         what must clear the truck. Where the road is too short anyway (a
+         squeezed portrait screen) it keeps off the truck and gives way on
+         the saw's side. */
       var gb = R.gridBox(q.g), mf = R.machineFrame(q.g);
-      var lo = R.sx(v.x + NOSE_X) + RULER_OVER + 8;
-      var hi = Math.min(gb.left - 16, mf ? R.sx(mf.left) - 8 : Infinity) - keysW;
+      var lo = R.sx(v.x + NOSE_X) + RULER_OVER + ROW_GAP;
+      var hi = Math.min(gb.left - 16, mf ? R.sx(mf.left) - ROW_GAP : Infinity) - keysW;
       x = lo <= hi ? (lo + hi) / 2 : lo;
-      y = R.sy(q.g.ay) + RULER_BOX * 0.25;       // down by the lip, beside the frame's foot
+      y = R.sy(q.g.ay) - RULER_BOX / 2 - CON_PAD - CON_BASE;   // the console stands on the road
     }
     x = Math.max(12, x);
-    /* The ruler stands on the box and is sized to reach the top of the
-       screen; below 20px a mark it can no longer shrink, and every mark must
-       be tappable - so the box never sits so high that it would not fit, nor
-       so low it leaves the screen. */
-    var need = 34 + N * 20 + RULER_BOX / 2;
-    y = CG.clamp(y, Math.min(need, R.H - 80), R.H - RULER_BOX / 2 - 14);
+    /* on the road, and only kept on screen - the ruler opens whichever way
+       has room for it (see drawRuler), so the console never sinks into the
+       ground to make room above */
+    var half = RULER_BOX / 2 + CON_PAD;
+    y = CG.clamp(y, half + 8, R.H - half - CON_BASE - 8);
     return { x: x, y: y };
   }
 
   function drawRuler(q) {
     var c = R.ctx, ru = q.ruler, N = CG.Gaps.RULER_MAX, i;
     var a = rulerAnchor(), box = RULER_BOX;
-    var vx = a.x, gx = a.x + box + 10, top = a.y - box / 2;      // value box, go button
-    R.avoid = { l: vx - 6, r: gx + box + 6, t: top - 6, b: top + box + 10 };
-    /* the ruler stands on the value box; the step shrinks on a short screen */
-    var step = CG.clamp((top - 34) / N, 20, 34), full = N * step + 26;
+    var vx = a.x, gx = a.x + box + 10, top = a.y - box / 2;      // display, go button
+    R.avoid = { l: vx - CON_PAD - 4, r: gx + box + CON_PAD + 4, t: top - CON_PAD - 4, b: top + box + CON_PAD + CON_BASE + 8 };
+    /* WHICH WAY THE RULER OPENS. The console always stands on the road, and
+       the ruler slides out of it DOWN over the dirt when a whole ruler fits
+       there - a high lip, as under a point at the origin with the plane
+       running on below it - and UP into the sky when it does not. Numbers
+       always grow away from the console. Chosen while it is folded and kept
+       while it is out, so a camera still settling never flips it half-open;
+       the step shrinks (never below a tappable 20px) to fit the room. */
+    var conB = top + box + CON_PAD + CON_BASE;                   // the console's foot
+    var roomUp = top - 12 - 20, roomDown = R.H - 16 - (conB + 12), MIN_FULL = N * 20 + 26;
+    if (ru.open < 0.01 && !ru.target) ru.down = roomDown >= MIN_FULL || (roomUp < MIN_FULL && roomDown > roomUp);
+    var down = !!ru.down;
+    var step = CG.clamp(((down ? roomDown : roomUp) - 26) / N, 20, 34), full = N * step + 26;
     var h = full * ru.open, NAVY = R.NAVY, BLUE = R.Y_COL;
     if (h > 2) {
-      var rx = vx + box / 2 - RULER_W / 2, ry = top - 12 - h;
+      var rx = vx + box / 2 - RULER_W / 2;
+      var ry = down ? conB + 12 + h - full : top - 12 - h;          // its top edge, as it slides out
       c.save();
-      R.roundRect(rx - 6, ry - 6, RULER_W + 12, h + 14, 14); c.clip();
+      R.roundRect(rx - 6, down ? conB + 6 : ry - 6, RULER_W + 12, h + 14, 14); c.clip();
       /* a white school ruler in the same glass as the tiles */
       c.save();
       c.shadowColor = 'rgba(20,40,110,0.3)'; c.shadowBlur = 10; c.shadowOffsetY = 4;
@@ -5712,7 +5981,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       c.lineWidth = 2; c.strokeStyle = '#C9DAEE'; c.stroke();
       c.fillStyle = 'rgba(31,107,255,0.06)'; c.fillRect(rx + 2, ry + 10, 14, full - 20);
       for (i = 1; i <= N; i++) {
-        var y = ry + 14 + (N - i) * step + step / 2, dead = !!q.wrong[i], cur = ru.cursor === i;
+        var y = down ? ry + 12 + (i - 1) * step + step / 2 : ry + 14 + (N - i) * step + step / 2;
+        var dead = !!q.wrong[i], cur = ru.cursor === i;
         if (cur && !dead) {
           var hx = rx + 16, hw = RULER_W - 22, hh = step * 0.84;
           c.save();
@@ -5728,7 +5998,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
         c.lineWidth = 1.1;
         c.beginPath();
         for (var qq = 1; qq < 4; qq++) {
-          var yy = y - step * qq / 4, l = qq === 2 ? 8 : 5;
+          var yy = y + (down ? 1 : -1) * step * qq / 4, l = qq === 2 ? 8 : 5;
           c.moveTo(rx + 2, yy); c.lineTo(rx + 2 + l, yy);
         }
         c.stroke();
@@ -5744,53 +6014,94 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
         }
         if (ru.open > 0.95 && !dead) btn('rul' + i, rx - 6, y - step / 2, RULER_W + 12, step, 4);
       }
-      /* the little pointer down onto the box */
-      c.beginPath(); c.moveTo(rx + RULER_W / 2 - 10, ry + full - 2); c.lineTo(rx + RULER_W / 2 + 10, ry + full - 2);
-      c.lineTo(rx + RULER_W / 2, ry + full + 9); c.closePath();
+      /* the little pointer back onto the console's display */
+      var pe = down ? ry + 2 : ry + full - 2, pt = down ? ry - 9 : ry + full + 9;
+      c.beginPath(); c.moveTo(rx + RULER_W / 2 - 10, pe); c.lineTo(rx + RULER_W / 2 + 10, pe);
+      c.lineTo(rx + RULER_W / 2, pt); c.closePath();
       c.fillStyle = '#EAF2FC'; c.fill();
       c.lineJoin = 'round'; c.lineWidth = 2; c.strokeStyle = '#C9DAEE'; c.stroke();
       c.restore();
     }
-    /* value box: a white glass tile - a dashed slot while empty, the number once chosen */
+    /* THE PLANK GENERATOR CONSOLE: the chosen length and the button that
+       makes the plank, on a little machine standing on the road between the
+       truck and the saw - the saw's own blue, yellow and hazard stripes. The
+       ruler stands on its display. */
+    var bx0 = vx - CON_PAD, by0 = top - CON_PAD, bw = gx + box + CON_PAD - bx0, bh = box + CON_PAD * 2 + CON_BASE;
+    var INK = '#0F1E4A', busy = q.phase !== 'ask';
     c.save();
-    R.roundRect(vx, top + 3, box, box, 13); c.fillStyle = '#B7CBE3'; c.fill();
+    /* its shadow on the road, and two feet */
+    c.globalAlpha = 0.3; c.fillStyle = INK;
+    c.beginPath(); c.ellipse(bx0 + bw / 2, by0 + bh + 3, bw * 0.5, 5, 0, 0, CG.TAU); c.fill();
+    c.globalAlpha = 1;
+    R.roundRect(bx0 + 10, by0 + bh - 4, 16, 8, 3); c.fillStyle = '#14307A'; c.fill();
+    R.roundRect(bx0 + bw - 26, by0 + bh - 4, 16, 8, 3); c.fill();
+    /* the body, lit from the top left */
+    R.roundRect(bx0, by0, bw, bh, 12);
+    c.fillStyle = barGrad(by0, bh, '#4F86EC', '#1D48A3'); c.fill();
     c.save();
-    c.shadowColor = 'rgba(20,40,110,0.18)'; c.shadowBlur = 8; c.shadowOffsetY = 3;
-    R.roundRect(vx, top, box, box, 13); c.fillStyle = barGrad(top, box, '#FFFFFF', '#E4EEFA'); c.fill();
+    R.roundRect(bx0, by0, bw, bh, 12); c.clip();
+    R.roundRect(bx0 + 6, by0 + 3, bw - 12, 7, 3.5); c.fillStyle = 'rgba(255,255,255,0.24)'; c.fill();
+    var hy = by0 + bh - CON_BASE - 3;                          // the hazard band along its foot
+    c.fillStyle = '#FFC928'; c.fillRect(bx0, hy, bw, CON_BASE + 3);
+    c.fillStyle = '#1E1E26';
+    for (var sx = bx0 - 16; sx < bx0 + bw + 16; sx += 14) {
+      c.beginPath(); c.moveTo(sx, hy + CON_BASE + 3); c.lineTo(sx + 7, hy + CON_BASE + 3);
+      c.lineTo(sx + 14, hy); c.lineTo(sx + 7, hy); c.closePath(); c.fill();
+    }
     c.restore();
-    R.roundRect(vx, top, box, box, 13); c.lineWidth = 1.5; c.strokeStyle = '#D3E1F1'; c.stroke();
+    R.roundRect(bx0, by0, bw, bh, 12); c.lineWidth = 3; c.strokeStyle = INK; c.stroke();
+    c.fillStyle = '#CFD8DC'; c.strokeStyle = INK; c.lineWidth = 1.2;       // rivets
+    [[bx0 + 7, by0 + 8], [bx0 + bw - 7, by0 + 8]].forEach(function (r) {
+      c.beginPath(); c.arc(r[0], r[1], 2.6, 0, CG.TAU); c.fill(); c.stroke();
+    });
+    /* the display: amber digits on a dark screen - dim dashes while empty,
+       the lit mark while choosing, the number firm once chosen, blinking
+       while the saw runs */
+    R.roundRect(vx, top, box, box, 9); c.fillStyle = '#0B1430'; c.fill();
+    c.lineWidth = 2.5; c.strokeStyle = '#050C22'; c.stroke();
+    R.roundRect(vx + 3, top + 3, box - 6, box - 6, 7); c.lineWidth = 1; c.strokeStyle = 'rgba(120,160,255,0.22)'; c.stroke();
+    c.fillStyle = 'rgba(255,255,255,0.035)';
+    for (var sl = top + 5; sl < top + box - 4; sl += 3) c.fillRect(vx + 4, sl, box - 8, 1);
     var shown = ru.value || ru.cursor;
     if (shown) {
-      R.text(String(shown), vx + box / 2, top + box / 2 + 1, 26, ru.value ? BLUE : '#9DB0C8', 'center', 0, false, R.CW);
+      var blink = q.phase === 'spawn' ? 0.55 + 0.45 * Math.abs(Math.cos(q.t * 6)) : 1;
+      c.save();
+      c.globalAlpha = blink;
+      c.shadowColor = 'rgba(255,170,40,0.9)'; c.shadowBlur = 10;
+      R.text(String(shown), vx + box / 2, top + box / 2 + 1, 28, ru.value ? '#FFB23F' : 'rgba(255,178,63,0.6)',
+             'center', 0, false, R.CW);
+      c.restore();
     } else {
-      c.setLineDash([4, 4]); c.lineWidth = 1.75; c.strokeStyle = '#8AA4C6';
-      R.roundRect(vx + 11, top + 11, box - 22, box - 22, 6); c.stroke();
-      c.setLineDash([]);
+      R.text('- -', vx + box / 2, top + box / 2 + 1, 22, 'rgba(255,178,63,0.3)', 'center', 0, false, R.CW);
     }
-    c.restore();
-    /* the amber play key: opens the ruler, then starts the machine */
+    /* the button: a red dome in a yellow bezel - it opens the ruler, cuts
+       the plank once a mark is lit, folds the ruler otherwise; asleep while
+       the saw works */
     var ready = ru.target && ru.cursor && !q.wrong[ru.cursor] && q.phase === 'ask';
-    var pulse = ready || !ru.target ? 1 + 0.05 * Math.sin(G.time * 7 + q.t * 7) : 1;
+    var pulse = !busy && (ready || !ru.target) ? 1 + 0.05 * Math.sin(G.clock * 7) : 1;
+    var bcx = gx + box / 2, bcy = top + box / 2, brr = box / 2 - 1;
     c.save();
-    c.translate(gx + box / 2, top + box / 2); c.scale(pulse, pulse); c.translate(-(gx + box / 2), -(top + box / 2));
-    R.roundRect(gx, top + 3, box, box, 13); c.fillStyle = '#E39027'; c.fill();
-    c.save();
-    c.shadowColor = 'rgba(120,60,0,0.2)'; c.shadowBlur = 8; c.shadowOffsetY = 3;
-    R.roundRect(gx, top, box, box, 13); c.fillStyle = barGrad(top, box, '#FFD968', '#FFAA24'); c.fill();
-    c.restore();
-    R.roundRect(gx, top, box, box, 13); c.lineWidth = 1.5; c.strokeStyle = '#F5A63A'; c.stroke();
-    R.roundRect(gx + 7, top + 4, box - 14, box * 0.32, box * 0.16);
-    c.fillStyle = 'rgba(255,255,255,0.38)'; c.fill();
-    var cx = gx + box / 2, cy = top + box / 2 + 1;
-    c.beginPath();
-    if (!ru.target || ready || q.phase !== 'ask') {            // play / go
-      c.moveTo(cx - 7, cy - 10); c.lineTo(cx + 11, cy); c.lineTo(cx - 7, cy + 10);
-    } else {                                                   // open, nothing picked: fold
-      c.moveTo(cx - 12, cy - 6); c.lineTo(cx + 12, cy - 6); c.lineTo(cx, cy + 8);
+    c.translate(bcx, bcy); c.scale(pulse, pulse); c.translate(-bcx, -bcy);
+    c.beginPath(); c.arc(bcx, bcy + 2.5, brr, 0, CG.TAU); c.fillStyle = INK; c.fill();
+    c.beginPath(); c.arc(bcx, bcy, brr, 0, CG.TAU);
+    c.fillStyle = barGrad(bcy - brr, brr * 2, '#FFE27A', '#E09A00'); c.fill();
+    c.lineWidth = 2.5; c.strokeStyle = INK; c.stroke();
+    var dr = brr - 6, dome = c.createRadialGradient(bcx - dr * 0.35, bcy - dr * 0.4, dr * 0.1, bcx, bcy, dr);
+    dome.addColorStop(0, busy ? '#C9A7A2' : '#FF8E7E'); dome.addColorStop(1, busy ? '#8E5F59' : '#D42A1C');
+    c.beginPath(); c.arc(bcx, bcy, dr, 0, CG.TAU); c.fillStyle = dome; c.fill();
+    c.lineWidth = 2; c.strokeStyle = '#6E130B'; c.stroke();
+    c.beginPath(); c.ellipse(bcx - dr * 0.28, bcy - dr * 0.42, dr * 0.42, dr * 0.2, -0.5, 0, CG.TAU);
+    c.fillStyle = 'rgba(255,255,255,0.45)'; c.fill();
+    c.fillStyle = '#FFFFFF'; c.strokeStyle = '#6E130B'; c.lineWidth = 1.5; c.lineJoin = 'round';
+    if (ready || busy) {
+      R.text('GO', bcx, bcy + 1, 17, busy ? 'rgba(255,255,255,0.6)' : '#FFFFFF', 'center', 3, true);
+    } else {
+      var up = !ru.target ? !ru.down : !!ru.down;             // folded: towards where it opens; open, nothing lit: back
+      c.beginPath();
+      c.moveTo(bcx - 9, bcy + (up ? 4 : -4)); c.lineTo(bcx, bcy + (up ? -6 : 6)); c.lineTo(bcx + 9, bcy + (up ? 4 : -4));
+      c.lineWidth = 4.5; c.lineCap = 'round'; c.strokeStyle = '#FFFFFF'; c.stroke();
     }
-    c.closePath();
-    c.lineJoin = 'round'; c.lineWidth = 2; c.strokeStyle = '#6B4424'; c.stroke();
-    c.fillStyle = '#6B4424'; c.fill();
+    c.restore();
     c.restore();
     if (q.phase === 'ask') btn('rulopen', gx - 4, top - 4, box + 8, box + 8, 6);
   }
@@ -5805,7 +6116,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       /* The question sits on a frosted glass pill with a ruler icon, in the
          strip between the HUD card and the fuel bar; where that strip is too
          narrow (a phone) it drops below the buttons, beside the ruler. */
-      var rulerRight = ra.x + RULER_BOX / 2 + RULER_W / 2 + 16;
+      var rulerRight = q.ruler.down ? 0 : ra.x + RULER_BOX / 2 + RULER_W / 2 + 16;   // a ruler opening down leaves the top free
       var bandL = Math.max(HUD_X + HUD_W + 14, rulerRight), bandR = W - 150, ty = 50, sh = 58;
       if (bandR - bandL < 420) { bandL = Math.max(rulerRight, 16); bandR = W - 16; ty = 150; sh = 52; }
       var pw = CG.clamp(bandR - bandL, 260, 580);
@@ -5852,9 +6163,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       var ru = q.ruler;
       var step = !ru.target ? 'open' : ru.cursor && !q.wrong[ru.cursor] ? 'drop' : 'pick';
       var tip = G.learned[step] ? '' : {
-        open: 'tap the orange button to open the ruler',
+        open: 'tap the red button to open the ruler',
         pick: 'tap the number the plank needs',
-        drop: 'tap the orange button to cut the plank' }[step];
+        drop: 'tap GO to cut the plank' }[step];
       var tipY = subY;
       c.restore();
       /* the ruler is the last thing to arrive, and the first thing the player
@@ -5924,7 +6235,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var N = CG.Gaps.RULER_MAX;
     if (k === 'Enter') { G.rulerButton(); return true; }
     if (k === 'ArrowUp' || k === 'ArrowDown') {
-      var n0 = CG.clamp((ru.cursor || 0) + (k === 'ArrowUp' ? 1 : -1), 1, N);
+      /* the highlight moves the way the key points: up the ruler is bigger
+         numbers when it opens up, smaller when it hangs down */
+      var n0 = CG.clamp((ru.cursor || 0) + ((k === 'ArrowUp') !== !!ru.down ? 1 : -1), 1, N);
       G.rulerPick(n0); if (!ru.target) ru.target = 1;
       return true;
     }
@@ -6160,15 +6473,10 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     bigButton('map', W / 2, y2 + bh + 22 * u, 220 * u, 56 * u, 'STAGE MAP', 'blue', 'iconHome');
   }
 
+  /* PAUSED: no menu - the world just holds still under a light shade, and
+     the forward pedal (drawn over it by drawHUD) glows until it is pressed. */
   function drawPaused() {
-    var W = R.W, H = R.H, u = uiScale();
-    dim(0.5);
-    var bottom = headline('PAUSED', 'gold', null, null, 'Take a breather!', u);
-    var y = Math.max(bottom + 90 * u, H * 0.42), bw = 320 * u;
-    bigButton('resume', W / 2, y, bw, 82 * u, 'RESUME', 'green', 'iconPlay', 'Back on the road', true);
-    bigButton('retry', W / 2, y + 108 * u, bw, 70 * u, 'RESTART', 'orange', 'iconRestart');
-    bigButton(G.mode === 'stage' ? 'map' : 'home', W / 2, y + 200 * u, bw, 70 * u,
-              G.mode === 'stage' ? 'STAGE MAP' : 'QUIT', 'blue', 'iconHome');
+    dim(0.22);
   }
 
   /* what went wrong, said the way a friend would: [headline, strap] */
@@ -6213,6 +6521,15 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
               stage ? 'STAGE MAP' : 'HOME', 'blue', 'iconHome', stage ? 'Pick another climb' : 'Back to main menu');
   }
 
+  /* a wrong plank: the edges of the screen flush red for a moment */
+  function redFlash(k) {
+    var c = R.ctx, W = R.W, H = R.H;
+    var g = c.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.32, W / 2, H / 2, Math.max(W, H) * 0.72);
+    g.addColorStop(0, 'rgba(255,50,40,0)');
+    g.addColorStop(1, 'rgba(255,50,40,' + (0.34 * k).toFixed(3) + ')');
+    c.save(); c.fillStyle = g; c.fillRect(0, 0, W, H); c.restore();
+  }
+
   /* ② the falling plank, with two fading copies of where it just was */
   function drawFall(q) {
     var c = R.ctx;
@@ -6247,7 +6564,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   function machineView(q) {
     var m = q.mach, f = R.machineFrame(q.g);
     return { sink: m.sink, ang: m.ang, cog: m.cog, roll: m.roll, lever: m.lever, lamp: m.lamp,
-             jolt: m.jolt, squash: m.squash,
+             jolt: m.jolt, squash: m.squash, clock: G.clock,
              blur: CG.clamp((m.spin - MACH.BLUR0) / (MACH.BLUR1 - MACH.BLUR0), 0, 1),
              plank: q.phase === 'spawn' && q.run && f ? { pose: feedPose(q, q.t), clipX: f.bladeX } : null };
   }
@@ -6269,7 +6586,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     if (f && q.run.units > 0) {
       var p = feedPose(q, q.t), front = p.x + p.len / 2, z = R.cam.z;
       var lx = (Math.max(f.bladeX + f.bladeR, front - p.len) + front) / 2, n = q.run.units;
-      R.haloText(n + (n === 1 ? ' unit' : ' units'), R.sx(lx), R.sy(p.y - 24), 18 * z,
+      var pop = 1 + 0.3 * CG.clamp(1 - (q.t - q.run.unitT) / 0.18, 0, 1);   // each count lands with a pop
+      R.haloText(n + (n === 1 ? ' unit' : ' units'), R.sx(lx), R.sy(p.y - 26), 19 * z * pop,
                  '#FFFFFF', 'center', 'rgba(27,42,94,0.7)');
     }
   }
@@ -6303,10 +6621,19 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
          it is road, and the label would only peek out from under the truck.
          On the belt (spawn) it is drawn by the machine, clipped at the blade. */
       if (q.phase === 'place') drawFall(q);
-      else if (q.phase !== 'spawn') R.drawPlank(G.plankPose(), null);
+      else if (q.phase !== 'spawn') {
+        var pp = G.plankPose();
+        pp.bad = q.bad ? CG.clamp(q.bad.t / 0.12, 0, 1) : 0;
+        /* the slam bounces it once, a hand's breadth, before it lies still -
+           drawn only: the road it has become does not move */
+        if (q.phase === 'drive' && q.t < 0.3) pp.y -= 7 * Math.sin(Math.PI * q.t / 0.3) * (1 - q.t / 0.3);
+        R.drawPlank(pp, null);
+      }
     }
     if (q) R.drawGapPoints(q.g, q.ptA, q.hint && q.phase === 'ask', q.ptB);
+    if (G.state === 'play' || G.state === 'paused') drawBlocker();
     R.drawVehicle(G.v, dt);
+    if (q && q.bad) R.drawBadMark(q.bad);
     R.calm = CG.approach(R.calm, q && q.phase !== 'done' && G.state === 'play' ? 1 : 0, 3, dt || 0.016);
     R.drawFX(true);
     R.drawForeground();
@@ -6318,11 +6645,12 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     if (G.state === 'title') drawTitle();
     else if (G.state === 'select') drawSelect();
     else {
+      if (G.state === 'paused') drawPaused();          // under the HUD: the glowing pedal must read
       drawHUD(dt);
       if (q && G.state === 'play') drawGapUI();
+      if (q && q.bad && q.bad.t < 0.45) redFlash(1 - q.bad.t / 0.45);
       if (q && q.plank && q.plank.kind === 'exact' && q.phase === 'drive' && q.t < 0.45) drawImpact(q);   // only a fit gets the burst
-      if (G.state === 'paused') drawPaused();
-      else if (G.state === 'over') drawOver();
+      if (G.state === 'over') drawOver();
       else if (G.state === 'win') drawWin();
     }
   }
@@ -6345,6 +6673,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var t0 = performance.now();
     var dt = last ? Math.min(0.05, (ts - last) / 1000) : 0.016;
     last = ts;
+    G.clock += dt;                     // wall time, for what animates even while paused
     if (G.state === 'play') {
       updatePlay(dt);
       updateCamera(dt, false);
@@ -6435,6 +6764,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       if (b.id === 'gas' || b.id === 'brake') continue;
       if (hit(b, p.x, p.y)) { pointers[e.pointerId] = b.id; press(b.id); return; }
     }
+    /* a pause has no menu: a touch carries on, and on the forward side it
+       also drives - which is what the glowing pedal is asking for */
+    if (G.state === 'paused') press('resume');
     if (G.state !== 'play') {
       /* a tap anywhere on the title screen starts a run */
       if (G.state === 'title') { pointers[e.pointerId] = 'play'; press('play'); }
@@ -6467,6 +6799,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     if (dn && G.state === 'play' && G.gap && G.gap.phase === 'ask' && G.rulerKey(k)) {
       e.preventDefault(); return;
     }
+    /* paused: forward carries on (and keeps driving while it is held) */
+    if (dn && G.state === 'paused' && /^(ArrowRight|ArrowUp|[dDwW ])$/.test(k)) press('resume');
     if (k === 'ArrowRight' || k === 'd' || k === 'D') keys.right = dn;
     else if (k === 'ArrowLeft' || k === 'a' || k === 'A') keys.left = dn;
     else if (k === ' ' || k === 'ArrowUp' || k === 'w' || k === 'W') keys.space = dn;
