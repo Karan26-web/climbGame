@@ -1,48 +1,90 @@
 #!/usr/bin/env python3
-"""Install a recorded sound effect: trim it, level it, embed it in index.html.
+"""Install the recorded sound effects: trim, loop, level, and write sfx.js.
 
     python3 tools/import_sfx.py [--check]
 
-The game ships as one file opened over file://, where Chrome refuses fetch()
-and XHR, so a sampled cue cannot be loaded from assets/ at runtime. Each clip
-is therefore embedded as a small base64 WAV between its markers in index.html:
+The game is opened straight off the disk (file://), where Chrome refuses
+fetch() and XHR, so a sampled cue cannot be loaded from assets/ as audio.
+A <script src> still loads, though - so every clip is written, as a small
+base64 WAV, into one generated script:
 
-    /* SFX:<name>:START */ ... /* SFX:<name>:END */
+    assets/audio/sfx.js      window.CG_SFX = { name: '<base64 wav>', ... }
+
+which index.html includes ahead of the game and decodes once audio starts
+(A.loadEmbedded). Any cue missing from it - or the whole file - falls back
+to the synthesised version, so the game never goes silent.
 
 Recordings arrive with dead air in front of them (break.mp3 has 2.2 s of room
 hiss before the screech), which would land the sound seconds after the event
-it belongs to. For each clip this tool:
+it belongs to. For each ONE-SHOT this tool:
 
   1. DECODES it to mono PCM at RATE (macOS afconvert - no ffmpeg needed)
-  2. FINDS the sound: the noise floor is the median 10 ms RMS of the clip; the
-     onset is the first window ONSET_DB above it, the tail the last window
-     TAIL_DB above it. Pre-roll/post-roll keep the attack and the ring-out.
+  2. FINDS the sound: a noise floor (see FLOOR below), the onset the first
+     10 ms window ONSET_DB above it, the tail the last window TAIL_DB above
+     it. Pre-roll/post-roll keep the attack and the ring-out; `max` caps how
+     long a long recording may ring.
   3. SHAPES it: a short fade-in so the cut never clicks, a longer fade-out so
      the tail dies naturally instead of ending on hiss, peak-normalised to
-     PEAK_DB so every embedded cue sits at the same level.
-  4. EMBEDS it as 16-bit WAV. --check prints what it found and writes the
-     trimmed clip to docs/ for listening, without touching index.html.
+     PEAK_DB so every one-shot sits at the same level (the mix is set by the
+     playback gains in A.sfx, not here).
+
+A LOOP ({'loop': (a, b)}) is the stretch a..b seconds of its recording made
+seamless: the XFADE after b is cross-faded (equal power) into the start, so
+the last sample runs straight on into the first. It is levelled to LOOP_RMS
+rather than by peak - the saw's two loops (motor, cut) have to match.
+
+--check prints what it found and writes every processed clip to a temp dir
+for listening, without touching sfx.js. Sources and licences: art_src/audio/SOURCES.md.
 """
-import base64, io, os, re, subprocess, sys, tempfile, wave
+import base64, io, math, os, subprocess, sys, tempfile, wave
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-INDEX = os.path.join(ROOT, 'index.html')
+OUT = os.path.join(ROOT, 'assets', 'audio', 'sfx.js')
 
-# name -> source recording
+A = 'art_src/audio/'
+SAW = A + 'fs411222_iternetcone_makita_table_saw.mp3'
+# name -> (source recording, options)
 CLIPS = {
-    'brake': 'assets/audios/break.mp3',
+    'brake':   ('assets/audios/break.mp3', {'floor': 'median'}),
+    # the plank machine
+    'saw_run': (SAW, {'loop': (5.0, 6.0)}),      # the motor at speed, no load
+    'saw_cut': (SAW, {'loop': (3.2, 4.2)}),      # the blade in the wood
+    'lever':   (A + 'kenney_rpg_metalLatch.ogg', {}),
+    'tick':    (A + 'kenney_impactMetal_light_001.ogg', {}),
+    'chop':    (A + 'kenney_rpg_chop.ogg', {}),
+    'plank':   (A + 'kenney_impactWood_light_002.ogg', {}),   # off the end of the belt
+    'slam':    (A + 'kenney_impactPlank_medium_001.ogg', {}),
+    'poof':    (A + 'fs208111_planman_poof_of_smoke.mp3', {'max': 0.8}),
+    'sink':    (A + 'fs90143_pengo_au_steam_burst.mp3', {'max': 0.9}),
+    'bump':    (A + 'kenney_impactMetal_medium_001.ogg', {}),
 }
 
-RATE = 24000            # a screech lives under 8 kHz; half of 48k halves the page weight
+RATE = 24000            # these cues live under 10 kHz; half of 48k halves the page weight
 WIN = 0.010             # analysis window, s
 ONSET_DB = 8            # this far above the floor is "the sound has started"
 TAIL_DB = 6             # ...and this far above it is "still ringing"
+FLOOR_SPAN = 60         # a 'quiet' floor never sits more than this below the peak
 PRE_ROLL = 0.015        # keep a little before the onset for the attack
 POST_ROLL = 0.060
 FADE_IN = 0.006
 FADE_OUT = 0.14
 PEAK_DB = -1.0
+XFADE = 0.08            # loop seam cross-fade, s
+LOOP_RMS = -20.0        # loops are levelled by RMS, dBFS
+
+
+def read_pcm16(path):
+    """16-bit PCM out of any RIFF/WAVE file - including WAVE_FORMAT_EXTENSIBLE,
+    which afconvert writes for some sources and the wave module refuses."""
+    b = open(path, 'rb').read()
+    i = 12
+    while i + 8 <= len(b):
+        cid, n = b[i:i + 4], int.from_bytes(b[i + 4:i + 8], 'little')
+        if cid == b'data':
+            return np.frombuffer(b[i + 8:i + 8 + n], np.int16).astype(np.float64) / 32768
+        i += 8 + n + (n & 1)
+    raise SystemExit(f'no audio data in {path}')
 
 
 def decode(path):
@@ -50,28 +92,52 @@ def decode(path):
         wav = os.path.join(tmp, 'x.wav')
         subprocess.run(['afconvert', '-f', 'WAVE', '-d', 'LEI16@%d' % RATE, '-c', '1',
                         os.path.join(ROOT, path), wav], check=True)
-        with wave.open(wav) as w:
-            return np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float64) / 32768
+        return read_pcm16(wav)
 
 
-def trim(x):
+def trim(x, opt):
+    """FLOOR: 'median' - the median window, right for a take that is mostly
+    room tone (the brake recording); otherwise 'quiet' - the 10th percentile,
+    for clean library clips where the sound fills most of the file and the
+    median would sit halfway down its own decay."""
     n = int(RATE * WIN)
     k = len(x) // n
     rms = np.sqrt((x[:k * n].reshape(k, n) ** 2).mean(1)) + 1e-9
     db = 20 * np.log10(rms)
-    floor = np.median(db)
+    if opt.get('floor') == 'median':
+        floor = np.median(db)
+    else:
+        floor = max(np.percentile(db, 10), db.max() - FLOOR_SPAN)
     loud = np.where(db > floor + ONSET_DB)[0]
     if not len(loud):
         raise SystemExit('no sound found above the noise floor')
     ring = np.where(db > floor + TAIL_DB)[0]
     a = max(0, int((loud[0] * WIN - PRE_ROLL) * RATE))
     b = min(len(x), int(((ring[-1] + 1) * WIN + POST_ROLL) * RATE))
+    if 'max' in opt:
+        b = min(b, a + int(opt['max'] * RATE))
     y = x[a:b].copy()
     fi, fo = int(FADE_IN * RATE), min(int(FADE_OUT * RATE), len(y) // 2)
     y[:fi] *= np.linspace(0, 1, fi)
     y[-fo:] *= np.linspace(1, 0, fo) ** 2
     y *= 10 ** (PEAK_DB / 20) / max(1e-9, np.abs(y).max())
     return y, a / RATE, b / RATE, floor, db.max()
+
+
+def make_loop(x, span):
+    a, b = int(span[0] * RATE), int(span[1] * RATE)
+    X, L = int(XFADE * RATE), b - a
+    seg = x[a:b + X]
+    if len(seg) < L + X:
+        raise SystemExit('loop runs past the end of its recording')
+    w = np.linspace(0, 1, X) * math.pi / 2
+    y = seg[:L].copy()
+    y[:X] = seg[L:L + X] * np.cos(w) + seg[:X] * np.sin(w)     # the tail runs on into the head
+    y *= 10 ** (LOOP_RMS / 20) / np.sqrt((y ** 2).mean())
+    pk = np.abs(y).max()
+    if pk > 10 ** (PEAK_DB / 20):
+        y *= 10 ** (PEAK_DB / 20) / pk
+    return y
 
 
 def to_wav(y):
@@ -84,24 +150,35 @@ def to_wav(y):
 
 def main():
     check = '--check' in sys.argv
-    html = open(INDEX, encoding='utf-8').read()
-    for name, src in CLIPS.items():
-        y, t0, t1, floor, peak = trim(decode(src))
+    tmp = tempfile.mkdtemp(prefix='sfx_check_') if check else None
+    out, total = {}, 0
+    for name, (src, opt) in CLIPS.items():
+        x = decode(src)
+        if 'loop' in opt:
+            y = make_loop(x, opt['loop'])
+            desc = f'loop {opt["loop"][0]:.2f}-{opt["loop"][1]:.2f} s, seam cross-faded {XFADE * 1000:.0f} ms'
+        else:
+            y, t0, t1, floor, peak = trim(x, opt)
+            desc = f'kept {t0:.3f}-{t1:.3f} s (floor {floor:.0f} dB, peak {peak:.0f} dB)'
         data = to_wav(y)
-        print(f'{name:8s} {src}: noise floor {floor:.0f} dB, peak {peak:.0f} dB')
-        print(f'         kept {t0:.3f}-{t1:.3f} s ({t1 - t0:.2f} s), {len(data) // 1024} KB wav')
+        total += len(data)
+        print(f'{name:8s} {len(y) / RATE:5.2f} s {len(data) // 1024:4d} KB  {desc}   <- {src}')
         if check:
-            out = os.path.join(ROOT, 'docs', f'sfx_{name}_trimmed.wav')
-            open(out, 'wb').write(data)
-            print(f'         wrote {os.path.relpath(out, ROOT)}')
-            continue
-        pat = re.compile(r"(/\* SFX:%s:START \*/ ')[^']*(' /\* SFX:%s:END \*/)" % (name, name))
-        if not pat.search(html):
-            raise SystemExit(f'markers for {name} not found in index.html')
-        html = pat.sub(lambda m: m.group(1) + base64.b64encode(data).decode() + m.group(2), html)
-    if not check:
-        open(INDEX, 'w', encoding='utf-8').write(html)
-        print('embedded into index.html')
+            open(os.path.join(tmp, name + '.wav'), 'wb').write(data)
+        out[name] = base64.b64encode(data).decode()
+    if check:
+        print(f'\nwrote {len(out)} clips to {tmp} for listening; sfx.js untouched')
+        return
+    lines = ['/* GENERATED by tools/import_sfx.py - do not edit by hand; re-run the tool.',
+             '   Recorded cues as base64 WAV (mono, %d Hz), loaded with a <script> tag' % RATE,
+             '   because file:// refuses fetch(). Sources and licences: art_src/audio/SOURCES.md. */',
+             'window.CG_SFX = {']
+    lines += ['  %s: \'%s\'%s' % (n, b, ',' if i < len(out) - 1 else '') for i, (n, b) in enumerate(out.items())]
+    lines += ['};', '']
+    os.makedirs(os.path.dirname(OUT), exist_ok=True)
+    open(OUT, 'w').write('\n'.join(lines))
+    print(f'\nwrote {os.path.relpath(OUT, ROOT)}: {len(out)} cues, {total // 1024} KB of audio, '
+          f'{os.path.getsize(OUT) // 1024} KB as base64')
 
 
 if __name__ == '__main__':

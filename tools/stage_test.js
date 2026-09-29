@@ -135,6 +135,10 @@ function runStage(i) {
     /* chasm ahead: the game takes the pedals, stops the car on the lip, asks.
        The bot knows the answer — it lays the exact plank and pays only the
        animation time, which is what a player who is right first time pays. */
+    /* the chasm just crossed keeps the truck on the game's leash until it
+       is over (CG.Gaps.leash: the machine holds the car further back than
+       the run-up the chasms were tuned with) */
+    if (gaps > 0) inp = CG.Gaps.leash(v, track.chasms[gaps - 1], inp);
     const g = track.chasms[gaps];
     if (g && v.x >= g.armX) {
       if (v.x >= g.stopX - 8 && Math.abs(v.forwardSpeed()) < 30 || v.x >= g.stopX) {
@@ -212,7 +216,8 @@ function runStage(i) {
    For each chasm the car is parked on the lip, every mark on the ruler (1 to
    RULER_MAX units) is laid in turn as a plank, and the car is floored across with the same scripted nudges
    the game applies (a short plank tips the nose at its end, a long one pitches
-   the car into the wall). The exact plank must carry the car to the far side
+   the car into the wall), and on the game's leash in both modes - it sets
+   the speed the plank is met at, so it is part of the approach, not a nudge. The exact plank must carry the car to the far side
    on its wheels; every wrong one must put it in the pit. `raw` repeats the
    wrong ones WITHOUT the nudges, so we also know whether the geometry alone
    teaches the lesson or the script is doing the work. */
@@ -234,7 +239,7 @@ function checkChasms(i) {
         let t = 0, tipped = false, tipT = 0, out = 'timeout';
         const Gp = CG.Gaps;
         while (t < 8) {
-          v.step(DT, GAS); t += DT;
+          v.step(DT, CG.Gaps.leash(v, g, GAS)); t += DT;   // the leash is the approach, not a nudge
           if (mode === 'game') {
             if (p.kind === 'short') {
               if (!tipped && Gp.shortTripped(v, p)) { tipped = true; tipT = t; Gp.boardGives(v); }

@@ -24,9 +24,33 @@ fails to decode silently keeps the synthesised cue. The manifest exists so that 
 with no audio files costs **one** request instead of fourteen 404s in the console — add a
 name to it the moment you add the file. So:
 
-- the game ships and runs today with **zero audio files** (that is the current state),
 - dropping files in makes it better with no code change,
-- `file://` (no server) always falls back to synth, which is fine and expected.
+- `file://` (no server) always falls back to synth for these slots, which is fine and expected.
+
+## Recorded cues that ship (`assets/audio/sfx.js`)
+
+A handful of cues are recordings that **do** work over `file://`. `fetch()` is refused
+there, but a `<script src>` is not, so `tools/import_sfx.py` trims, loops and levels them
+into one generated script, `assets/audio/sfx.js` (`window.CG_SFX = { name: base64 WAV }`,
+mono 24 kHz), which `index.html` loads ahead of the game. `A.loadEmbedded()` decodes them
+when audio starts. A cue missing from it, or the whole file, keeps its synthesised version.
+
+| Cue | Plays when | Source (all CC0 — see `art_src/audio/SOURCES.md`) |
+|---|---|---|
+| `brake` | the auto-brake grabs at a chasm | `assets/audios/break.mp3` |
+| `saw_run` + `saw_cut` | the plank machine cuts (`A.saw`) — two loops, the motor pitched up/down for spin-up and spin-down, the cut layered on only while wood is in the blade | Freesound 411222, table saw |
+| `lever` | an answer is confirmed: the machine's lever latches | Kenney RPG Audio |
+| `tick` | each unit of plank passes the blade — one tick per unit, a semitone higher each time, so the count can be heard | Kenney Impact Sounds |
+| `chop` | the cut finishes | Kenney RPG Audio |
+| `plank` | the cut board is kicked off the belt | Kenney Impact Sounds |
+| `slam` + `poof` | the plank lands across the hole, with the comic dust | Kenney plank impact + Freesound 208111 |
+| `sink` | the machine sinks out of the road | Freesound 90143, steam burst |
+| `bump` | a fast truck bumps into the machine | Kenney Impact Sounds |
+
+Playback levels live in one table, `SAMPLED` in `index.html`, beside `A.sfx`. To add or
+replace one: put the CC0 source in `art_src/audio/`, add a line to `CLIPS` in
+`tools/import_sfx.py` (`{'loop': (a, b)}` for a loop, `{'max': s}` to cap a long tail),
+run the tool, and record the source in `SOURCES.md`.
 
 ## The slots
 
