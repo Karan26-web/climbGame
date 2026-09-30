@@ -61,6 +61,8 @@
 </div>
 <!-- the recorded sound effects (tools/import_sfx.py) - a script, because file:// refuses fetch() -->
 <script src="assets/audio/sfx.js"></script>
+<!-- every word on screen, in each language (tools/build_i18n.js wraps i18n/strings.json) -->
+<script src="i18n/strings.js"></script>
 <script>
 /* =====================================================================
    CLIMB — a side-scrolling physics climber.
@@ -1410,6 +1412,70 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 
 /* ============================= PHYSICS-CORE-END ============================= */
 
+/* =================================== I18N =================================== */
+/* Every word the game shows comes from i18n/strings.json through T(). The
+   JSON is the file to edit; tools/build_i18n.js wraps it as i18n/strings.js,
+   loaded above as a plain <script> because file:// refuses fetch(). Served
+   over http the JSON itself is fetched once at boot and wins, so an edit
+   shows without a rebuild. ?lan=hi (or ?lang=hi) picks the language; a code
+   the table lacks, or none, is English. A key no language has comes back as
+   the key itself, so a gap is seen on screen rather than hidden. */
+(function (CG) {
+  'use strict';
+  var I = CG.i18n = {}, FALLBACK = 'en';
+  var TABLE = (typeof window !== 'undefined' && window.CG_I18N) || {};
+  I.lang = FALLBACK;
+  I.has = function (lang) { return !!(TABLE[lang] && typeof TABLE[lang] === 'object'); };
+  I.setLang = function (lang) {
+    lang = String(lang || '').toLowerCase().split('-')[0];
+    I.lang = I.has(lang) ? lang : FALLBACK;
+    if (typeof document !== 'undefined' && document.documentElement) document.documentElement.lang = I.lang;
+    return I.lang;
+  };
+  I.install = function (table) { TABLE = table || {}; I.setLang(I.lang); };
+  function lookup(lang, key) {
+    var o = TABLE[lang], parts = key.split('.'), i;
+    for (i = 0; o && i < parts.length; i++) o = o[parts[i]];
+    return o;
+  }
+  /* T('win.title'); T('select.stars', { n: 3, total: 24 }). An entry written
+     as { one, other } picks by vars.n. */
+  I.t = function (key, vars) {
+    var v = lookup(I.lang, key);
+    if (v === undefined && I.lang !== FALLBACK) v = lookup(FALLBACK, key);
+    if (v && typeof v === 'object') v = (vars && vars.n === 1 && v.one !== undefined) ? v.one : v.other;
+    if (typeof v !== 'string') return key;
+    return vars ? v.replace(/\{(\w+)\}/g, function (m, k) { return vars[k] !== undefined ? vars[k] : m; }) : v;
+  };
+  CG.T = I.t;
+  /* Latin can be drawn a letter at a time (the bouncing title); Devanagari
+     and other shaped scripts must be drawn whole, or the vowel signs come
+     apart from their consonants. */
+  I.simpleScript = function (str) { return !/[^\u0000-ɏ -⁯]/.test(str); };
+  /* the language from the URL, read before anything is drawn */
+  I.fromUrl = function () {
+    var m = /[?&]lan(?:g)?=([^&#]*)/i.exec(location.search || '');
+    return I.setLang(m ? decodeURIComponent(m[1]) : '');
+  };
+  /* over http the JSON is live: fetched once, installed over the built copy */
+  I.refresh = function () {
+    if (location.protocol === 'file:' || typeof fetch !== 'function') return;
+    fetch('i18n/strings.json', { cache: 'no-cache' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) { if (j) I.install(j); })
+      .catch(function () {});
+  };
+
+  I.fromUrl();
+  /* the splash is HTML and up before the canvas: give it its words now */
+  var T = I.t, h1 = document.querySelector('#boot h1'), bm = document.getElementById('bootmsg'),
+      lf = document.getElementById('lesson');
+  if (h1 && h1.children.length > 1) { h1.children[0].textContent = T('title.word1'); h1.children[1].textContent = T('title.word2'); }
+  if (bm) bm.textContent = T('boot.loading');
+  if (lf) lf.title = T('lesson.title');
+  document.title = T('title.page');
+})(CG);
+
 /* ================================== ASSETS ================================== */
 (function (CG) {
   'use strict';
@@ -2282,7 +2348,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 /* ================================== RENDER ================================= */
 (function (CG) {
   'use strict';
-  var V = CG.VConst;
+  var V = CG.VConst, T = CG.T;
   var R = CG.R = {
     canvas: null, ctx: null, W: 1280, H: 720, dpr: 1,
     cam: { x: 0, y: 0, z: 1 },
@@ -3055,8 +3121,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
           c.save();
           c.translate(R.sx(pr.x), R.sy(pr.y) - pr.h * R.cam.z - 10);
           if (pr.label) R.text(pr.label, 0, 0, 15 * R.cam.z, '#FFE082', 'center', 3);
-          else if (pr.cp) R.text('CHECK ' + pr.marker, 0, 0, 20, '#AED581', 'center', 4);
-          else R.text(String(pr.marker * 160) + 'm', 0, 0, 20, '#FFF9C4', 'center', 4);
+          else if (pr.cp) R.text(T('road.check', { n: pr.marker }), 0, 0, 20, '#AED581', 'center', 4);
+          else R.text(T('road.metres', { n: pr.marker * 160 }), 0, 0, 20, '#FFF9C4', 'center', 4);
           c.restore();
         }
       }
@@ -3091,7 +3157,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       }
     }
     c.strokeRect(x0, y0, w + post * 2, band);
-    R.text('FINISH', sxp, y0 + band + 34 * z, 30 * z, '#FFD54F', 'center', 5 * z);
+    R.text(T('road.finish'), sxp, y0 + band + 34 * z, 30 * z, '#FFD54F', 'center', 5 * z);
     c.restore();
   };
 
@@ -3415,8 +3481,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     c.font = R.font(fs * 1.3, false, 800);
     c.fillStyle = AXIS_LETTER;
     c.textBaseline = 'middle';
-    if (showX) { c.textAlign = 'left'; c.fillText('x', xR + arrow * 0.7, ay - fs * 0.05); }
-    if (showY) { c.textAlign = 'left'; c.fillText('y', ax + fs * 0.55, yT - arrow * 0.15); }
+    if (showX) { c.textAlign = 'left'; c.fillText(T('axis.x'), xR + arrow * 0.7, ay - fs * 0.05); }
+    if (showY) { c.textAlign = 'left'; c.fillText(T('axis.y'), ax + fs * 0.55, yT - arrow * 0.15); }
     c.restore();
   }
 
@@ -4130,6 +4196,15 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     c.fillText(str, x, y);
   };
 
+  /* The size at which `str` fits in `maxW`, measured - not guessed from its
+     length, which Devanagari (wide, few letters) and Latin disagree on. */
+  R.fit = function (str, size, maxW, display, weight) {
+    var c = R.ctx;
+    c.font = R.font(size, display, weight);
+    var w = c.measureText(str).width;
+    return w > maxW && w > 0 ? size * maxW / w : size;
+  };
+
   /* Small caps label, tracked out: PLANKS, "4 planks fitted this run". */
   R.label = function (str, x, y, size, fill, align) {
     var c = R.ctx;
@@ -4173,9 +4248,12 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     for (i = 0; i < parts.length; i++) {
       if (i) x += gapW;
       var str = parts[i][0], grad = TITLE_GRAD[parts[i][1]] || TITLE_GRAD.gold;
-      for (j = 0; j < str.length; j++) {
-        var ch = str[j], w = c.measureText(ch).width;
-        if (ch !== ' ') {
+      /* Latin bounces a letter at a time; a shaped script (Devanagari) is
+         drawn a word at a time, so its vowel signs stay on their consonants */
+      var units = CG.i18n.simpleScript(str) ? str.split('') : str.split(/( )/);
+      for (j = 0; j < units.length; j++) {
+        var ch = units[j], w = c.measureText(ch).width;
+        if (ch !== ' ' && ch !== '') {
           glyphs.push({ ch: ch, x: x, w: w, grad: grad,
                         rot: wob * 0.055 * Math.sin(k * 2.3 + 0.7),
                         dy: wob * size * (0.035 * Math.sin(k * 1.7 + 0.3) +
@@ -4283,6 +4361,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var c = R.ctx;
     opt = opt || {};
     c.save();
+    if (opt.maxW) size = R.fit(str, size, opt.maxW - size * 2.2);   // a long strap shrinks to its strip
     c.font = R.font(size);
     var w = Math.min(c.measureText(str).width + size * 2.2, opt.maxW || 1e9), h = size * 2;
     var x = cx - w / 2, y = cy - h / 2;
@@ -4447,49 +4526,52 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      hypotenuse first, reviewing the ones before: 3-4-5, 6-8-10, 5-12-13,
      9-12-15, 8-15-17, 12-16-20, and GOLDEN SUMMIT asks all six. From the
      first answer longer than 14 (stage 5) the ruler is the long one
-     (`ruler`, see CG.Gaps.RULER; stages without one get the short ruler). */
+     (`ruler`, see CG.Gaps.RULER; stages without one get the short ruler).
+     `name` is the stage's label in the tools (stage_test prints it); what
+     the player reads - the name in their language, and the one-line
+     subtitle - is stages.<id> in i18n/strings.json. */
   CG.Stages = [
-    { id: 1, name: 'MEADOW START', sub: 'distance along a line', seed: 1101, d: 0.12,
+    { id: 1, name: 'MEADOW START', seed: 1101, d: 0.12,
       plan: ['start', { c: [-2, -2, 3, -2] }, 'rollers', { c: [-4, -2, 2, -2] },
              'CP', 'shelf', 'washboard', { c: [1, -1, 5, -1] }, 'rollers',
              'FINISH', 'finish'] },
 
-    { id: 2, name: 'BLOSSOM TRAIL', sub: 'down the slope: 3-4-5', seed: 2214, d: 0.25,
+    { id: 2, name: 'BLOSSOM TRAIL', seed: 2214, d: 0.25,
       plan: ['start', { c: [-3, -1, 4, -1] }, 'rollers', { c: [-2, -1, 2, -4] },
              'CP', 'shelf', 'crest', { c: [-1, -1, 5, -1] }, 'washboard', { c: [-1, -1, 3, -4] },
              'FINISH', 'finish'] },
 
-    { id: 3, name: 'ORCHARD CLIMB', sub: 'twice the size: 6-8-10', seed: 3307, d: 0.38,
+    { id: 3, name: 'ORCHARD CLIMB', seed: 3307, d: 0.38,
       plan: ['start', { c: [-2, -1, 2, -4] }, 'rollers', 'climb', { c: [-5, 2, 3, -4] },
              'CP', 'shelf', 'washboard', { c: [-4, 1, 4, -5] }, 'rollers',
              'CP', 'shelf', { c: [0, -2, 5, -2] }, 'crest', 'FINISH', 'finish'] },
 
-    { id: 4, name: 'SUNSET RIDGE', sub: 'the long climb: 5-12-13', seed: 4419, d: 0.50,
+    { id: 4, name: 'SUNSET RIDGE', seed: 4419, d: 0.50,
       plan: ['start', { c: [-3, -1, 5, -1] }, 'rollers', { c: [-2, -1, 1, -5] },
              'CP', 'shelf', 'crest', { c: [-6, -2, 6, 3] }, 'washboard', { c: [-5, -1, 3, -7] },
              'CP', 'shelf', 'rollers', 'FINISH', 'finish'] },
 
-    { id: 5, name: 'WIND GAP', sub: 'scaled up: 9-12-15', seed: 5523, d: 0.62,
+    { id: 5, name: 'WIND GAP', seed: 5523, d: 0.62,
       ruler: 21,
       plan: ['start', { c: [-4, -3, 8, 2] }, 'rollers', 'descent', { c: [-3, -3, 3, -3] },
              'CP', 'shelf', 'climb', { c: [-6, 2, 6, -7] }, 'washboard', { c: [-2, -1, 2, -4] },
              'CP', 'shelf', 'rollers', 'crest', 'FINISH', 'finish'] },
 
-    { id: 6, name: 'THUNDER STEPS', sub: 'steeper climb: 8-15-17', seed: 6631, d: 0.72,
+    { id: 6, name: 'THUNDER STEPS', seed: 6631, d: 0.72,
       ruler: 21,
       plan: ['start', { c: [-5, -2, 4, -2] }, 'rollers', { c: [-3, 4, 9, -5] },
              'CP', 'shelf', 'crest', 'descent', { c: [-7, -1, 8, 7] }, 'washboard',
              'CP', 'shelf', { c: [-9, 4, 6, -4] }, 'rollers', { c: [-4, -3, 7, -3] },
              'FINISH', 'finish'] },
 
-    { id: 7, name: 'HIGH MEADOW', sub: 'the big drop: 12-16-20', seed: 7741, d: 0.85,
+    { id: 7, name: 'HIGH MEADOW', seed: 7741, d: 0.85,
       ruler: 21,
       plan: ['start', { c: [-4, -3, 8, 2] }, 'climb', { c: [-8, -1, 0, -7] },
              'CP', 'shelf', 'rollers', { c: [-6, -2, 6, -2] }, 'crest', { c: [-2, -5, 2, -8] },
              'CP', 'shelf', 'washboard', { c: [-8, 3, 8, -9] }, 'descent',
              'FINISH', 'finish'] },
 
-    { id: 8, name: 'GOLDEN SUMMIT', sub: 'all six triples', seed: 8853, d: 1.0,
+    { id: 8, name: 'GOLDEN SUMMIT', seed: 8853, d: 1.0,
       ruler: 21,
       plan: ['start', { c: [-5, -1, 7, 4] }, 'rollers', 'climb', { c: [-3, 4, 9, -5] },
              'CP', 'shelf', 'crest', { c: [-7, -1, 1, -7] }, 'washboard', { c: [-10, -3, 5, 5] },
@@ -4509,7 +4591,10 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 /* ==================================== GAME ================================= */
 (function (CG) {
   'use strict';
-  var R = CG.R, A = CG.Audio, V = CG.VConst, FX = CG.FX;
+  var R = CG.R, A = CG.Audio, V = CG.VConst, FX = CG.FX, T = CG.T;
+  /* what the player reads of a stage - its name and subtitle in their language */
+  function stageName(st) { return T('stages.' + st.id + '.name'); }
+  function stageSub(st) { return T('stages.' + st.id + '.sub'); }
   var SUB = 1 / 180;                 // fixed physics substep — 60Hz diverges,
                                      // 90Hz+ converges (tools/sim_test.js)
 
@@ -4561,7 +4646,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      starts. A lesson that never says it is up (the folder missing, say) is
      put away after LESSON_WAIT seconds and the road carries on without it.
      An external lesson instead: set LEARN_URL, or pass ?learn=<url>. */
-  var LESSON_URL = 'learn/index.html?embed=1';
+  /* the lesson is told the game's language too, for when it learns to speak it */
+  function lessonUrl() { return 'learn/index.html?embed=1&lan=' + encodeURIComponent(CG.i18n.lang); }
   var LESSON_WAIT = 12;
   G.lesson = { done: false, force: false, off: false, frame: null, loaded: false,
                ready: false, up: false, waitT: 0, onDone: null };
@@ -4588,7 +4674,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   function loadLesson() {
     var f = lessonFrame(), L = G.lesson;
     if (!f) return;
-    if (!L.loaded) { L.loaded = true; L.ready = false; f.src = LESSON_URL; }
+    if (!L.loaded) { L.loaded = true; L.ready = false; f.src = lessonUrl(); }
     if (!L.up) f.classList.add('loading');
   }
 
@@ -4847,7 +4933,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     A.sfx('crash');
     R.shake = 14;
     respawnAt(lastSafeX - 70);
-    FX.text(G.v.x, G.v.y - 96, 'TRY AGAIN!', '#4FC3F7', true);
+    FX.text(G.v.x, G.v.y - 96, T('fx.tryAgain'), '#4FC3F7', true);
   }
 
   /* -------------------------------------------------------------- update */
@@ -5271,10 +5357,10 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      and badged for the first; the two ends land (with the dashed span
      between them) for the second; the plane comes up for the third. Each
      holds for its `t` seconds or until a tap, then the lesson opens. */
-  var INTRO = [
-    { t: 3.8, text: 'Oops, the road is broken!' },
-    { t: 5.4, text: 'To cross this gap, we need to know the distance between its two ends.' },
-    { t: 4.4, text: 'Let’s explore how to find that on a coordinate plane!' }
+  var INTRO = [                            // the words: intro.line1..3 in i18n/strings.json
+    { t: 3.8, key: 'intro.line1' },
+    { t: 5.4, key: 'intro.line2' },
+    { t: 4.4, key: 'intro.line3' }
   ];
   var INTRO_LEAD = 0.7, INTRO_IN = 0.35, INTRO_OUT = 0.3, INTRO_MIN = 0.9;
 
@@ -5395,9 +5481,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       for (k = 0; k < 3; k++) FX.dust(p.x1, p.y1, 60, 0, 1);
     }
     if (p.kind === 'exact') {
-      FX.text((p.x0 + p.x1) / 2, Math.min(p.y0, p.y1) - 60, 'PERFECT FIT!', '#AED581', true);
+      FX.text((p.x0 + p.x1) / 2, Math.min(p.y0, p.y1) - 60, T('fx.perfect'), '#AED581', true);
     }
-    FX.text(v.x, v.y - 110, 'GO!', '#FFD54F', true);
+    FX.text(v.x, v.y - 110, T('fx.go'), '#FFD54F', true);
     A.sfx('go');
   }
 
@@ -5496,7 +5582,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     g.solved = true;
     if (q.tries === 0) G.firstTry++;
     G.crossed++;
-    FX.text(v.x, v.y - 110, q.tries === 0 ? 'FIRST TRY!' : 'ACROSS!', '#FFD54F', true);
+    FX.text(v.x, v.y - 110, T(q.tries === 0 ? 'fx.firstTry' : 'fx.across'), '#FFD54F', true);
     A.sfx('gem');
     q.phase = 'done'; q.t = 0;
   }
@@ -6213,7 +6299,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     c.fillStyle = 'rgba(255,255,255,0.45)'; c.fill();
     c.fillStyle = '#FFFFFF'; c.strokeStyle = '#6E130B'; c.lineWidth = 1.5; c.lineJoin = 'round';
     if (ready || busy) {
-      R.text('GO', bcx, bcy + 1, 17, busy ? 'rgba(255,255,255,0.6)' : '#FFFFFF', 'center', 3, true);
+      var go = T('gap.go');
+      R.text(go, bcx, bcy + 1, R.fit(go, 17, dr * 1.7, true), busy ? 'rgba(255,255,255,0.6)' : '#FFFFFF', 'center', 3, true);
     } else {
       var up = !ru.target ? !ru.down : !!ru.down;             // folded: towards where it opens; open, nothing lit: back
       c.beginPath();
@@ -6284,10 +6371,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     if (q.phase === 'lesson') {
       if (G.lesson.up) return;
       dim(0.45);
-      var bottom = headline('THE LESSON DIDN’T OPEN', 'gold', null, null,
-                            'Check that the learn folder sits beside the game - or carry on to the question.', u);
+      var bottom = headline(T('intro.noLessonTitle'), 'gold', null, null, T('intro.noLessonStrap'), u);
       bigButton('lessonskip', W / 2, Math.min(bottom + 90 * u, H - 80 * u), 300 * u, 80 * u,
-                'CONTINUE', 'green', 'iconRestart', 'On to the question');
+                T('intro.continue'), 'green', 'iconRestart', T('intro.continueSub'));
       return;
     }
     var s = q.step, b = INTRO[s];
@@ -6300,7 +6386,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var P = R.PLATE, band = P.text.bottom - P.text.top;
     c.save();
     c.font = R.font(fs, false, R.CW);
-    var lines = wrapText(c, b.text, maxW - pad * 2), tw = 0;
+    var lines = wrapText(c, T(b.key), maxW - pad * 2), tw = 0;
     for (i = 0; i < lines.length; i++) tw = Math.max(tw, c.measureText(lines[i]).width);
     var lh = fs * 1.3, h = Math.max(fs * 4.1, (lines.length * lh + 26) / band), w = Math.max(tw + pad * 2, h * 1.6);
     var x = W / 2 - w / 2, y = x > HUD_X + 150 ? 14 : 72;     // clear of the hearts
@@ -6338,9 +6424,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       R.glass(tx - pw / 2, py - sh / 2, pw, sh, sh / 2);
       /* said the way a friend beside you would, not set as a test question:
          the task is to pick a length, and after a miss, to pick another */
-      var QUESTION = q.tries === 0 ? 'Let\u2019s pick the right length for the plank!'
-                                   : 'Let\u2019s try another length for the plank.';
-      var ic = sh * 0.58, qs = Math.min(sh * 0.37, (pw - ic * 2.4 - 40) / (QUESTION.length * 0.5));
+      var QUESTION = T(q.tries === 0 ? 'gap.questionFirst' : 'gap.questionAgain');
+      var ic = sh * 0.58, qs = R.fit(QUESTION, sh * 0.37, pw - ic * 2.4 - 40, false, R.CW);
       c.font = R.font(qs, false, R.CW);
       var qw = c.measureText(QUESTION).width;
       var gx0 = tx - (qw + ic * 1.9) / 2;
@@ -6358,10 +6443,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
          speaks to the interaction - open, pick, cut - never to the maths. */
       var ru = q.ruler;
       var step = !ru.target ? 'open' : ru.cursor && !q.wrong[ru.cursor] ? 'drop' : 'pick';
-      var tip = G.learned[step] ? '' : {
-        open: 'Tap the red button to open the ruler',
-        pick: 'Tap the number of units the plank needs',
-        drop: 'Tap GO to cut the plank' }[step];
+      var tip = G.learned[step] ? '' : T({ open: 'gap.tipOpen', pick: 'gap.tipPick', drop: 'gap.tipDrop' }[step]);
       q.tipStep = tip ? step : '';
       var tipY = subY;
       c.restore();
@@ -6483,12 +6565,12 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       c.drawImage(im, ix, cy - s / 2, s, s);
       tx = (ix + s + x + w) / 2 - h * 0.06; avail = x + w - (ix + s) - h * 0.3;
     }
-    var fs = Math.min(sub ? h * 0.36 : h * 0.44, avail / Math.max(3, label.length * 0.62));
+    var fs = R.fit(label, sub ? h * 0.36 : h * 0.44, avail, true);
     var ly = sub ? cy - h * 0.1 : cy + 1;
     R.text(label, tx, ly + 2, fs, 'rgba(59,31,12,0.5)', 'center', fs * 0.24, true);
     R.text(label, tx, ly, fs, '#FFFFFF', 'center', fs * 0.24, true);
     if (sub) {
-      var ss = Math.min(h * 0.155, avail / (sub.length * 0.55));
+      var ss = R.fit(sub, h * 0.155, avail);
       R.text(sub, tx, cy + h * 0.24, ss, P.sub, 'center', 0);
     }
     c.restore();
@@ -6533,12 +6615,12 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     wash.addColorStop(0, 'rgba(20,16,40,0.38)'); wash.addColorStop(1, 'rgba(20,16,40,0)');
     c.fillStyle = wash; c.fillRect(0, 0, W, H * 0.42);
     var ts = Math.min(124 * u, W * 0.14), ty = H * 0.17 + ts * 0.1;
-    var tw = R.title([['CLIMB', 'gold'], ['GAME', 'blue']], W / 2, ty, ts, { t: G.time });
+    var tw = R.title([[T('title.word1'), 'gold'], [T('title.word2'), 'blue']], W / 2, ty, ts, { t: G.time });
     R.sparks(W / 2, ty, tw / 2 + ts * 0.1, ts * 0.42, G.time);
 
     var bw = 330 * u, bh = 90 * u, py = Math.min(H * 0.8, H - bh / 2 - 34 * u);
     R.sparks(W / 2, py, bw / 2 + 6 * u, 26 * u, G.time);
-    bigButton('play', W / 2, py, bw, bh, 'PLAY', 'green', 'iconPlay', null, true);
+    bigButton('play', W / 2, py, bw, bh, T('title.play'), 'green', 'iconPlay', null, true);
 
     iconBtn('mute', W - 46, 46, 26, G.muted ? 'soundOff' : 'soundOn', false);
   }
@@ -6548,8 +6630,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var c = R.ctx, W = R.W, H = R.H, n = CG.Stages.length, u = uiScale();
     dim(0.5);
     var ts = Math.min(62 * u, W * 0.08);
-    R.title([['CHOOSE A', 'gold'], ['CLIMB', 'blue']], W / 2, H * 0.1, ts, { wobble: 0.6 });
-    R.ribbon(G.totalStars() + ' of ' + (n * 3) + ' stars collected', W / 2, H * 0.1 + ts * 0.85, Math.max(12, 16 * u));
+    R.title([[T('select.title1'), 'gold'], [T('select.title2'), 'blue']], W / 2, H * 0.1, ts, { wobble: 0.6 });
+    R.ribbon(T('select.stars', { n: G.totalStars(), total: n * 3 }), W / 2, H * 0.1 + ts * 0.85, Math.max(12, 16 * u));
 
     var cols = 4, rows = Math.ceil(n / cols);
     var gap = 18, cw = Math.min(250, (W - 80 - gap * (cols - 1)) / cols), ch = 118;
@@ -6566,23 +6648,23 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       c.fillStyle = open ? barGrad(y + 14, 32, '#FFE680', '#FFAE1F') : '#4A5468'; c.fill();
       c.lineWidth = 3; c.strokeStyle = R.INK; c.stroke();
       R.text(String(st.id), x + 26, y + 31, 19, open ? '#FFFFFF' : '#9AA6BA', 'center', open ? 4 : 0, true);
-      R.text(open ? st.name : 'LOCKED', x + 50, y + 31, Math.min(19, (cw - 60) / (st.name.length * 0.52)),
-             open ? '#FFF' : '#8190A8', 'left', 0, true);
+      var nm = open ? stageName(st) : T('select.locked');
+      R.text(nm, x + 50, y + 31, R.fit(nm, 19, cw - 60, true), open ? '#FFF' : '#8190A8', 'left', 0, true);
       if (open) {
-        R.text(st.sub, x + 16, y + 58, 13, '#A9C3E6', 'left', 0);
+        R.text(stageSub(st), x + 16, y + 58, 13, '#A9C3E6', 'left', 0);
         starRow(x + cw / 2, y + 86, rec ? rec.s : 0, 26);
         if (rec) R.text(fmtTime(rec.t), x + cw - 14, y + 108, 13, '#C6F26A', 'right', 0);
       } else {
-        R.text('clear stage ' + i + ' first', x + 16, y + 78, 14, '#8190A8', 'left', 0);
+        R.text(T('select.clearFirst', { n: i }), x + 16, y + 78, 14, '#8190A8', 'left', 0);
       }
     }
 
     var by = Math.min(gy + rows * (ch + gap) + 30, H - 56), bh = 64 * Math.min(1, u);
     if (G.endlessOpen()) {
-      bigButton('endless', W / 2 - 130, by, 240, bh, 'ENDLESS', 'orange', null);
-      bigButton('home', W / 2 + 130, by, 200, bh, 'HOME', 'blue', 'iconHome');
+      bigButton('endless', W / 2 - 130, by, 240, bh, T('select.endless'), 'orange', null);
+      bigButton('home', W / 2 + 130, by, 200, bh, T('select.home'), 'blue', 'iconHome');
     } else {
-      bigButton('home', W / 2, by, 240, bh, 'HOME', 'blue', 'iconHome');
+      bigButton('home', W / 2, by, 240, bh, T('select.home'), 'blue', 'iconHome');
     }
     iconBtn('mute', W - 46, 46, 26, G.muted ? 'soundOff' : 'soundOn', false);
   }
@@ -6591,8 +6673,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      under it. Returns the y of the sign's bottom edge. */
   function headline(l1, g1, l2, g2, strap, u) {
     var W = R.W, H = R.H;
-    var sw = Math.min(560 * u, W - 32), s1 = Math.min(60 * u, sw / (l1.length * 0.62));
-    var s2 = l2 ? Math.min(46 * u, sw / (l2.length * 0.62)) : 0;
+    var sw = Math.min(560 * u, W - 32), s1 = R.fit(l1, 60 * u, sw * 0.96, true);
+    var s2 = l2 ? R.fit(l2, 46 * u, sw * 0.96, true) : 0;
     var sh = s1 * 1.35 + (l2 ? s2 * 1.2 : 0) + 34 * u;
     var cy = Math.max(sh / 2 + 18 * u, H * 0.06 + sh / 2);
     R.woodSign(W / 2, cy, sw, sh, { ropes: true });
@@ -6616,20 +6698,19 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     c.save();
     c.globalAlpha = k;
     dim(0.5);
-    var bottom = headline('YOU DID IT!', 'green', null, null,
-                          st ? st.name : 'Every gap crossed \u2014 mission complete!', u);
+    var bottom = headline(T('win.title'), 'green', null, null, st ? stageName(st) : T('win.mission'), u);
     var sy = bottom + 70 * u;
     starRow(W / 2, sy, G.stars, 76 * u, Math.max(0, G.winT - WIN_IN * 0.6));
 
     /* one line of results: the planks, and how many fitted first time */
     var pw = Math.min(470 * u, W - 32), px = W / 2 - pw / 2, rh = 34 * u, ly = sy + 70 * u;
     R.card(px, ly - 26 * u, pw, rh + 18 * u, 16 * u);
-    R.label('planks', px + 24 * u, ly, 12 * u);
+    R.label(T('win.planks'), px + 24 * u, ly, 12 * u);
     R.text(G.firstTry + ' / ' + G.gapCount, px + pw * 0.58, ly, 22 * u,
            G.firstTry === G.gapCount ? '#C6F26A' : '#FFFFFF', 'right', 0);
-    R.text('first try', px + pw - 20 * u, ly, 13 * u, '#8FA6C6', 'right', 0);
+    R.text(T('win.firstTry'), px + pw - 20 * u, ly, 13 * u, '#8FA6C6', 'right', 0);
     var by = ly + rh + 20 * u;
-    if (st && G.newBest) R.badge('NEW BEST TIME!', W / 2, by + 14 * u, 17 * u, G.winT);
+    if (st && G.newBest) R.badge(T('win.newBest'), W / 2, by + 14 * u, 17 * u, G.winT);
 
     var bh = 76 * u, y2 = Math.min(by + 80 * u, H - 150 * u);
     /* the buttons arrive with the sign, and are not tappable before they
@@ -6638,13 +6719,13 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     if (st) {
       var last = G.stageIdx >= CG.Stages.length - 1;
       bigButton(last ? 'map' : 'next', W / 2 - 115 * u, y2, 250 * u, bh,
-                last ? 'MAP' : 'NEXT', 'green', 'iconPlay', last ? null : 'On to the next climb', true);
-      bigButton('retry', W / 2 + 125 * u, y2, 210 * u, bh, 'RETRY', 'orange', 'iconRestart', 'Keep all three hearts');
-      bigButton('map', W / 2, y2 + bh + 22 * u, 220 * u, 56 * u, 'STAGE MAP', 'blue', 'iconHome');
+                T(last ? 'win.map' : 'win.next'), 'green', 'iconPlay', last ? null : T('win.nextSub'), true);
+      bigButton('retry', W / 2 + 125 * u, y2, 210 * u, bh, T('win.retry'), 'orange', 'iconRestart', T('win.retrySub'));
+      bigButton('map', W / 2, y2 + bh + 22 * u, 220 * u, 56 * u, T('win.stageMap'), 'blue', 'iconHome');
     } else {
-      bigButton('retry', W / 2, y2, 340 * u, bh, 'PLAY AGAIN', 'green', 'iconRestart', 'Another run at it', true);
-      bigButton('learn', W / 2, y2 + bh + 26 * u, 340 * u, bh, 'BACK TO THE LESSON', 'blue', 'iconHome',
-                'On to the next part');
+      bigButton('retry', W / 2, y2, 340 * u, bh, T('win.playAgain'), 'green', 'iconRestart', T('win.playAgainSub'), true);
+      bigButton('learn', W / 2, y2 + bh + 26 * u, 340 * u, bh, T('win.lesson'), 'blue', 'iconHome',
+                T('win.lessonSub'));
     }
     c.restore();
   }
@@ -6662,8 +6743,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   function drawOver() {
     var c = R.ctx, W = R.W, H = R.H, u = uiScale();
     dim(0.5);
-    var bottom = headline('OUT OF HEARTS!', 'gold', null, null,
-                          'Three planks missed the mark. Take another look, or go again!', u);
+    var bottom = headline(T('over.title'), 'gold', null, null, T('over.strap'), u);
     var y = bottom + 60 * u;
     /* the three, all grey: what ran out */
     var hi = CG.img.heart, hs = 46 * u, i;
@@ -6674,16 +6754,14 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       c.restore();
     }
     if (G.crossed > 0) {
-      R.label(G.crossed + (G.crossed === 1 ? ' plank fitted' : ' planks fitted') + ' this run',
-              W / 2, y + hs * 0.9, 13 * u, '#FFE7A8', 'center');
+      R.label(T('over.fitted', { n: G.crossed }), W / 2, y + hs * 0.9, 13 * u, '#FFE7A8', 'center');
     }
 
     var ty = Math.min(y + hs + 80 * u, H - 190 * u), bh = 86 * u;
     R.sparks(W / 2, ty, 170 * u, 24 * u, G.time);
-    bigButton('learn', W / 2, ty, 340 * u, bh, 'BACK TO THE LESSON', 'blue', 'iconHome',
-              'Revisit the distance formula', true);
-    bigButton('retry', W / 2, ty + bh + 26 * u, 340 * u, bh, 'PLAY AGAIN', 'green', 'iconRestart',
-              'Three fresh hearts');
+    bigButton('learn', W / 2, ty, 340 * u, bh, T('over.lesson'), 'blue', 'iconHome', T('over.lessonSub'), true);
+    bigButton('retry', W / 2, ty + bh + 26 * u, 340 * u, bh, T('over.playAgain'), 'green', 'iconRestart',
+              T('over.playAgainSub'));
   }
 
   /* a wrong plank: the edges of the screen flush red for a moment */
@@ -6703,7 +6781,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       gp.alpha = 0.16 * (3 - g);
       R.drawPlank(gp, null);
     }
-    R.drawPlank(G.plankPose(), q.t < PLACE_T * 0.78 ? q.len + ' units' : null);
+    R.drawPlank(G.plankPose(), q.t < PLACE_T * 0.78 ? T('gap.units', { n: q.len }) : null);
   }
 
   /* ③ the landing: short bursts of light either side of the plank's middle */
@@ -6747,7 +6825,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       var p = feedPose(q, q.t), front = p.x + p.len / 2, z = R.cam.z;
       var lx = (Math.max(f.bladeX + f.bladeR, front - p.len) + front) / 2, n = q.run.units;
       var pop = 1 + 0.3 * CG.clamp(1 - (q.t - q.run.unitT) / 0.18, 0, 1);   // each count lands with a pop
-      R.haloText(n + (n === 1 ? ' unit' : ' units'), R.sx(lx), R.sy(p.y - 26), 19 * z * pop,
+      R.haloText(T('gap.units', { n: n }), R.sx(lx), R.sy(p.y - 26), 19 * z * pop,
                  '#FFFFFF', 'center', 'rgba(27,42,94,0.7)');
     }
   }
@@ -7001,6 +7079,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   }
 
   CG.boot = function () {
+    CG.i18n.refresh();                    // over http: the JSON itself, not the built copy
     var canvas = document.getElementById('c');
     R.attach(canvas);
     load();
@@ -7025,8 +7104,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     window.addEventListener('error', function (e) {
       boot.classList.remove('gone');
       boot.style.display = 'flex';
-      msg.textContent = 'ERROR: ' + (e.message || e.type) +
-        (e.lineno ? ' (line ' + e.lineno + ')' : '');
+      msg.textContent = T('boot.error', { msg: e.message || e.type }) +
+        (e.lineno ? T('boot.errorLine', { n: e.lineno }) : '');
     });
 
     /* the canvas UI measures text every frame; make sure it measures the
@@ -7045,7 +7124,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     CG.loadAssets(
       function (p) { fill.style.width = Math.round(p * 100) + '%'; },
       function (failed) {
-        if (failed.length) msg.textContent = failed.length + ' asset(s) missing';
+        if (failed.length) msg.textContent = T('boot.missing', { n: failed.length });
         CG.loadThemes();
         /* ?season=winter&clock=0.95&weather=snow pins the scene, for looking */
         if (opts.season || opts.clock || opts.weather) {

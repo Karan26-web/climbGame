@@ -354,6 +354,27 @@ chasm sequence or the renderer; the bot cannot see. Both shot tools open the gam
 `&lesson=0`, so the first chasm asks its question instead of opening the lesson — any
 script that drives a fresh browser to the first chasm needs the same.
 
+## Languages
+
+Every word on screen — the splash, the title, the stage map, the three intro lines, the
+question and its nudges, the floating shouts, the win and out-of-hearts signs, the endless
+road markers — is looked up through `T(key)` from [i18n/strings.json](i18n/strings.json),
+which holds English (`en`) and Hindi (`hi`). `?lan=hi` (or `?lang=hi`) picks the language;
+a code the file lacks, or none, is English, and a key one language lacks falls back to the
+English line. Counts go in as `{n}`, and an entry written as `{ one, other }` picks by the
+count, so "1 unit" and "3 units" each read right.
+
+The JSON is the file to edit. Because the game ships over `file://`, where `fetch()` is
+refused, the table is loaded as a plain script — run `node tools/build_i18n.js` after an
+edit to regenerate [i18n/strings.js](i18n/strings.js); it also lists any key a language is
+missing. Served over http the game fetches the JSON itself at boot, so there an edit shows
+without the build. To add a language, copy the `en` block under its code, translate, and
+rebuild. Devanagari (and any script the embedded Latin fonts lack) is drawn in the system's
+face; the bouncing title draws such a script a word at a time rather than a letter at a
+time, so its vowel signs stay on their consonants, and buttons, signs and straps size
+their text by measuring it. The lesson in `learn/` is vendored and still speaks English;
+the game passes it `&lan=` in the frame URL for when it learns to.
+
 ## Still open
 
 - **Theme per stage.** All eight stages share one art set — now the evening-spring one
