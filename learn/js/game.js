@@ -6965,29 +6965,33 @@
       if (this.landFlight) this.landFlight(true);
     },
 
-    begin: function () {
-      const self = this;
+    /* `quick`: straight in, with none of the Play button's fanfare -
+       the embedded start (offerPlay), where no button was ever pressed. */
+    begin: function (opt) {
+      const self = this, quick = !!(opt && opt.quick);
       /* Not before every file is here and Play is offered: a key pressed
          while the bar is still filling is simply not a start yet. */
       if (!startReady) return;
       if (this.busy) return;
       this.busy = true;
 
-      SFX.pop();
-      SFX.sparkle();
-      el.playBtn.classList.add('pressed');
+      if (!quick) {
+        SFX.pop();
+        SFX.sparkle();
+        el.playBtn.classList.add('pressed');
 
-      const P = C.PLAY.box;
-      FX.ring(P.cx, P.cy, 120, 'rgba(120,200,255,.95)');
-      FX.starBurst(P.cx, P.cy, 18, 230);
+        const P = C.PLAY.box;
+        FX.ring(P.cx, P.cy, 120, 'rgba(120,200,255,.95)');
+        FX.starBurst(P.cx, P.cy, 18, 230);
+      }
 
       setTimeout(function () {
-        SFX.whoosh();
+        if (!quick) SFX.whoosh();
         el.startScreen.classList.add('fade-out');
         el.scene.classList.remove('hidden');
         void el.scene.offsetWidth;
         el.scene.classList.add('fade-in');
-      }, 260);
+      }, quick ? 0 : 260);
 
       setTimeout(function () {
         el.startScreen.classList.add('hidden');
@@ -6995,7 +6999,7 @@
         FX.motes(18);
         self.busy = false;
         self.goTo(0);
-      }, 900);
+      }, quick ? 500 : 900);
     },
 
     /* What a screen expects to find already drawn.
@@ -10203,7 +10207,7 @@
     /* The last screen has said its last line, or Next was pressed on it:
        the lesson is over. Said once, as an event on the window, for
        whatever the page sits inside to act on — js/embed.js passes it to
-       the page around an <iframe> (the Climb Game, which opens the
+       the page around an <iframe> (Cliff Cross, which opens the
        lesson at its first broken road). On its own the game simply
        rests on its last screen, as it always has. */
     over: false,
@@ -10278,6 +10282,26 @@
      text is sized by measurement, so the real face has to be in before
      anything gets measured. */
   let startReady = false;          // Play offered: every file fetched, she has landed
+  let filesReady = false;          // every file fetched (the bar is done)
+  let showWanted = false;          // the page around us has put the lesson up (embed.js)
+
+  /* Embedded, the lesson has no title screen of its own: the page around
+     it says when it is on view, and it opens on its first screen then -
+     at once if every file is here, or the moment the last one lands
+     (offerPlay). Her flight and the Play button are for the lesson on its
+     own. The sounds are asked for anyway: the frame is allowed autoplay,
+     and a browser that refuses leaves the words to the notes, as ever. */
+  function embedded() { return document.documentElement.classList.contains('embedded'); }
+  function beginAtOnce() {
+    if (Game.state !== 'start' || Game.busy) return;
+    startReady = true;
+    try { SFX.unlock(); if (window.Voice && window.Voice.prime) window.Voice.prime(); } catch (e) {}
+    Game.begin({ quick: true });
+  }
+  window.addEventListener('lesson:show', function () {
+    showWanted = true;
+    if (filesReady) beginAtOnce();
+  });
   function preload(done) {
     let fontsReady = false;
     /* And every label measured before the real face arrived was
@@ -10777,8 +10801,10 @@
   /* Every file here: the bar goes, she flies in, and Play pops up where
      the bar was — offered only once she has flown in and settled. */
   function offerPlay() {
+    filesReady = true;
     el.loadBar.classList.add('done');
     setTimeout(function () { el.loadBar.classList.add('hidden'); }, 420);
+    if (embedded() && showWanted) { beginAtOnce(); return; }   // straight in: no flight, no Play
     StartBird.arrive(function () {
       el.playBtn.disabled = false;   // also unreachable by keyboard until now
       el.playBtn.classList.remove('veiled');

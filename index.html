@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#2F4A93">
-<title>Climb Game</title>
+<title>Cliff Cross</title>
 <style>
   /* UI type, embedded: over file:// Chrome refuses font files as cross-origin.
      Lilita One (display) and Nunito (UI), both SIL OFL 1.1, latin subset. */
@@ -55,7 +55,7 @@
 <canvas id="c"></canvas>
 <iframe id="lesson" title="Distance formula lesson" allow="autoplay"></iframe>
 <div id="boot">
-  <h1><span>CLIMB</span><span>GAME</span></h1>
+  <h1><span>CLIFF</span><span>CROSS</span></h1>
   <div id="bar"><div id="fill"></div></div>
   <p id="bootmsg">loading art&hellip;</p>
 </div>
@@ -4230,7 +4230,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 
   /* A chunky game title: extruded depth, fat ink outline, glossy gradient.
      `parts` is [[text, gradName], ...] so one line can mix colours
-     (CLIMB in gold, GAME in blue). Letters get a small deterministic tilt
+     (CLIFF in gold, CROSS in blue). Letters get a small deterministic tilt
      and bob, like hand-lettering - `wobble` 0 turns that off. `t` animates
      a gentle bounce. Returns the drawn width. */
   R.title = function (parts, cx, cy, size, opt) {
@@ -4397,25 +4397,6 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     g.addColorStop(1, opt.bottom || 'rgba(14,22,44,0.86)');
     c.fillStyle = g; c.fill();
     c.lineWidth = 2; c.strokeStyle = opt.edge || 'rgba(170,200,255,0.22)'; c.stroke();
-    c.restore();
-  };
-
-  /* Short yellow dashes flaring out either side of a hero element. */
-  R.sparks = function (cx, cy, halfW, size, t) {
-    var c = R.ctx, a = [-0.6, 0, 0.6], i, sd;
-    var k = 1 + 0.15 * Math.sin((t || 0) * 5), gap = size * 0.3, len = size * 0.6 * k;
-    c.save();
-    c.lineCap = 'round'; c.strokeStyle = '#FFD83A'; c.lineWidth = Math.max(3, size * 0.14);
-    for (sd = -1; sd <= 1; sd += 2) {
-      var ex = cx + sd * halfW;
-      for (i = 0; i < 3; i++) {
-        var ux = Math.cos(a[i]) * sd, uy = Math.sin(a[i]);
-        c.beginPath();
-        c.moveTo(ex + ux * gap, cy + uy * gap);
-        c.lineTo(ex + ux * (gap + len), cy + uy * (gap + len));
-        c.stroke();
-      }
-    }
     c.restore();
   };
 
@@ -4632,7 +4613,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      teaching; this game is the practice. The first time a player reaches a
      chasm the game stops to say why the road needs the maths - three lines,
      each with the thing it names lit: the broken road, its two ends, the
-     plane - and then the lesson opens over the game in an <iframe>. When
+     plane - and then the lesson opens over the game in an <iframe>, straight
+     on its first screen: the game tells it when it is on view
+     (climbgame:show) and it skips its own title screen. When
      Swifty says "Let's head back and bridge that gap!" the lesson tells the
      page it is over (learn/js/embed.js), the overlay fades, and the
      question is asked exactly as it always is: machine, points, plane,
@@ -4664,10 +4647,19 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     window.addEventListener('message', function (e) {
       var d = e.data;
       if (!d || typeof d !== 'object' || e.source !== f.contentWindow) return;
-      if (d.type === 'distance-formula:ready') L.ready = true;
+      if (d.type === 'distance-formula:ready') { L.ready = true; if (L.up) tellLesson('show'); }
       else if (d.type === 'distance-formula:complete') lessonDone();
     });
     return f;
+  }
+
+  /* the lesson is told when it is on view (climbgame:show), and opens on its
+     first screen then - it has no title screen inside the game. Sent once it
+     has said it is up: a message posted before its scripts run is lost. */
+  function tellLesson(what) {
+    var f = G.lesson.frame;
+    if (!f || !f.contentWindow) return;
+    try { f.contentWindow.postMessage({ type: 'climbgame:' + what }, '*'); } catch (e) {}
   }
 
   /* fetched unseen, so it is there by the time the road has been explained */
@@ -4685,6 +4677,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     loadLesson();
     void f.offsetWidth;                     // so the fade-up is a fade
     f.classList.remove('loading', 'down'); f.classList.add('up');
+    if (L.ready) tellLesson('show');
     A.duck(true);
     setTimeout(function () { if (L.up) { try { f.focus(); } catch (e) {} } }, 120);
   }
@@ -6616,10 +6609,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     c.fillStyle = wash; c.fillRect(0, 0, W, H * 0.42);
     var ts = Math.min(124 * u, W * 0.14), ty = H * 0.17 + ts * 0.1;
     var tw = R.title([[T('title.word1'), 'gold'], [T('title.word2'), 'blue']], W / 2, ty, ts, { t: G.time });
-    R.sparks(W / 2, ty, tw / 2 + ts * 0.1, ts * 0.42, G.time);
 
     var bw = 330 * u, bh = 90 * u, py = Math.min(H * 0.8, H - bh / 2 - 34 * u);
-    R.sparks(W / 2, py, bw / 2 + 6 * u, 26 * u, G.time);
     bigButton('play', W / 2, py, bw, bh, T('title.play'), 'green', 'iconPlay', null, true);
 
     iconBtn('mute', W - 46, 46, 26, G.muted ? 'soundOff' : 'soundOn', false);
@@ -6758,7 +6749,6 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     }
 
     var ty = Math.min(y + hs + 80 * u, H - 190 * u), bh = 86 * u;
-    R.sparks(W / 2, ty, 170 * u, 24 * u, G.time);
     bigButton('learn', W / 2, ty, 340 * u, bh, T('over.lesson'), 'blue', 'iconHome', T('over.lessonSub'), true);
     bigButton('retry', W / 2, ty + bh + 26 * u, 340 * u, bh, T('over.playAgain'), 'green', 'iconRestart',
               T('over.playAgainSub'));

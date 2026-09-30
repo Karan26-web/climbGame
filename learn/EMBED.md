@@ -2,7 +2,7 @@
 
 This folder is *Distance Formula — Swifty's Adventure*
 (https://github.com/aniketchauhan-star/distance-formula), copied whole at upstream
-commit `e992a18` (2026-09-30), minus its `.git` and `.attic`. The Climb Game opens it in an
+commit `e992a18` (2026-09-30), minus its `.git` and `.attic`. Cliff Cross opens it in an
 `<iframe>` as `learn/index.html?embed=1` the first time a player reaches a chasm (see
 "The lesson in the road" in [../GAME_DESIGN.md](../GAME_DESIGN.md)). It also runs on its
 own, unchanged, from `learn/index.html`.

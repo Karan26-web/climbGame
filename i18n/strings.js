@@ -6,9 +6,9 @@ window.CG_I18N = {
    "name": "English"
   },
   "title": {
-   "page": "Climb Game",
-   "word1": "CLIMB",
-   "word2": "GAME",
+   "page": "Cliff Cross",
+   "word1": "CLIFF",
+   "word2": "CROSS",
    "play": "PLAY"
   },
   "boot": {
@@ -135,9 +135,9 @@ window.CG_I18N = {
    "name": "हिन्दी"
   },
   "title": {
-   "page": "क्लाइम्ब गेम",
-   "word1": "क्लाइम्ब",
-   "word2": "गेम",
+   "page": "क्लिफ़ क्रॉस",
+   "word1": "क्लिफ़",
+   "word2": "क्रॉस",
    "play": "खेलें"
   },
   "boot": {
