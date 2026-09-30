@@ -1,0 +1,315 @@
+/* The formula table: the grid panel extended to the right.
+
+   It wears the board's own frame and paper — the same inset edge,
+   frame and highlight, the same radius and shadow — so it reads as the
+   same panel grown out of the board's right edge rather than a card
+   laid beside it. It sits UNDER the board (it is inserted before it),
+   with its left edge tucked behind the board's, and opens left to
+   right like a drawer. */
+.formula-table {
+  position: absolute; z-index: 2;
+  transform: translateY(-50%);
+  box-sizing: border-box;
+  /* --room: extra paper at the foot for a scroller's tiles, set from
+     formula-table.js while one hangs below the last row. The panel is
+     centred on its `top`, so whatever it grows by at the foot it would
+     grow by half as much upward too; the margin moves it down by that
+     half, and with the two on one transition the top edge never moves
+     — the panel extends downward only. */
+  --room: 0px;
+  padding: 48px 44px calc(48px + var(--room)) 92px;   /* the tucked-in edge carries no type */
+  margin-top: calc(var(--room) / 2);
+  border-radius: var(--radius, 46px);
+  background: var(--paper-inner, #FFFDF1);
+  box-shadow:
+    inset 0 0 0 var(--edgeW,  2px) var(--paper-edge,  #141930),
+    inset 0 0 0 var(--frameW, 14px) var(--paper-frame, #252C47),
+    inset 0 0 0 var(--hiW,    16px) var(--paper-hi,    #FFF2A8),
+    0 8px 22px rgba(16, 20, 40, .30);
+  font-family: 'Nunito', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: var(--ft-size, 40px);
+  line-height: 1.15;
+  color: #213258;
+  /* Closed: nothing shows past its own left edge, which is behind the
+     board. Opening uncovers it rightward. */
+  clip-path: inset(0 100% 0 0 round var(--radius, 46px));
+  transition: clip-path .7s cubic-bezier(.22, .61, .36, 1),
+              padding-bottom .3s cubic-bezier(.22, .61, .36, 1),
+              margin-top .3s cubic-bezier(.22, .61, .36, 1);
+  pointer-events: none;
+}
+.formula-table.open   { clip-path: inset(0 0 0 0 round var(--radius, 46px)); }
+.formula-table.hidden { display: none; }
+/* One line kept and the rest let go (Table.only): they fade, then fold
+   away, and the panel closes up round what is left. Its other
+   transitions are carried on alongside, not replaced. */
+.formula-table .ft-going { opacity: 0; transition: opacity .32s ease; }
+.formula-table .ft-gone  { display: none; }
+.formula-table.folding {
+  transition: height .42s cubic-bezier(.22, .61, .36, 1),
+              clip-path .7s cubic-bezier(.22, .61, .36, 1),
+              padding-bottom .3s cubic-bezier(.22, .61, .36, 1),
+              margin-top .3s cubic-bezier(.22, .61, .36, 1);
+}
+
+/* One column of equals signs, a column per term; every row lines up
+   under the one above it. */
+.formula-table .ft-grid {
+  position: relative;          /* what the answer's green is laid against */
+  display: grid;
+  grid-template-columns: repeat(5, auto);
+  justify-content: center;
+  align-items: baseline;
+  column-gap: .34em;
+  row-gap: .55em;
+}
+/* The line the working ends on, shown as the answer (markRow): the green
+   a right blank takes, under the whole line — "d =" as well. */
+.formula-table .ft-answer {
+  /* Under the words, over the panel: the panel is the stacking context
+     (it is positioned with a z-index), so -1 lies on its paper. The cells
+     are left unpositioned — made layers of their own, a blank's tiles
+     would slide under the row beneath it. */
+  position: absolute; z-index: -1;
+  box-sizing: content-box;
+  margin: -.12em 0 0 -.3em;
+  padding: .12em .3em;
+  border-radius: .3em;
+  background: #DDF3DF;
+  opacity: 0;
+  transition: opacity .4s ease;
+  pointer-events: none;
+}
+.formula-table .ft-answer.on { opacity: 1; }
+
+/* A square root drawn whole (drawRoots): the sign stretched to the height
+   of what it covers and a bar over all of it, blanks too — no brackets
+   standing in for the bar. */
+.formula-table .rad {
+  display: inline-flex;
+  /* The root sits on the line by its own words: the body alone takes part
+     in baseline alignment, so the root's baseline is its text's, level
+     with the "d =" before it. With every item stretched, the sign (which
+     has no text) gave the root its bottom edge for a baseline, and all
+     that was under the bar stood a few pixels above the rest of the line. */
+  align-items: baseline;
+  white-space: nowrap;
+}
+.formula-table .rad-sign { flex: none; width: .6em; align-self: stretch; }
+.formula-table .rad-sign svg { display: block; width: 100%; height: 100%; }
+.formula-table .rad-body {
+  border-top: .08em solid currentColor;
+  padding: .06em .22em 0 .04em;
+}
+.formula-table .ft-col0 { justify-self: end; }      /* the left-hand side meets its = */
+.formula-table .ft-col1,
+.formula-table .ft-col2,
+.formula-table .ft-col3,
+.formula-table .ft-col4 { justify-self: center; }
+
+/* A row comes in as its skeleton; a written value when it is written. */
+.formula-table .ft-cell {
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateY(.18em);
+  transition: opacity .45s ease, transform .45s cubic-bezier(.22, .61, .36, 1);
+}
+.formula-table .ft-cell.in { opacity: 1; transform: none; }
+
+/* The empty slot: the space the name will take, held open by the name
+   itself (laid out, not shown), with a soft dashed line under it. */
+.formula-table .ft-slot { display: inline-block; position: relative; padding: 0 .06em; }
+.formula-table .ft-slot::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: .06em;
+  border-bottom: 3px dashed rgba(33, 50, 88, .32);
+  transition: opacity .3s ease;
+}
+.formula-table .ft-fill { visibility: hidden; }
+.formula-table .ft-slot.landed .ft-fill { visibility: visible; }
+.formula-table .ft-slot.landed::after  { opacity: 0; }
+
+html.calm .formula-table { transition: none; }
+html.calm .formula-table .ft-cell { transition: opacity .2s linear; transform: none; }
+
+/* Once the drawer has opened its clip goes, so a scroller dropping from
+   the last row can hang below the table instead of being cut off. */
+.formula-table.open.settled { clip-path: none; }
+
+/* ---------------------------------------------------------------
+   The blanks a child fills (screen 29c). One is active at a time: it
+   breathes, carries a small chevron, and takes a tap; the rest wait.
+   --------------------------------------------------------------- */
+.formula-table .ft-pick {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.35em;
+  padding: 0 .12em;
+  height: 1.18em;
+  vertical-align: -.16em;
+  border: 3px dashed rgba(33, 50, 88, .28);
+  border-radius: .28em;
+  transition: border-color .3s ease, background-color .3s ease;
+}
+/* Held open at the width of its widest tile, so nothing in the row moves
+   when it fills; the number shows over the same spot. */
+.formula-table .ft-sizer,
+.formula-table .ft-num { grid-area: 1 / 1; }
+.formula-table .ft-sizer { visibility: hidden; }
+
+.formula-table .ft-pick.active {
+  pointer-events: auto;
+  cursor: pointer;
+  border-color: #E8A33C;
+  background-color: rgba(255, 214, 120, .18);
+  animation: ftBreathe 1.6s ease-in-out infinite;
+}
+.formula-table .ft-pick.active::after {             /* the chevron: tap me */
+  content: '';
+  position: absolute; left: 50%; top: calc(100% + .1em);
+  width: .34em; height: .34em;
+  border-right: 3px solid #E8A33C; border-bottom: 3px solid #E8A33C;
+  transform: translateX(-50%) rotate(45deg);
+}
+.formula-table .ft-pick.opened { animation: none; }
+.formula-table .ft-pick.opened::after { opacity: 0; }
+@keyframes ftBreathe {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(232, 163, 60, 0); }
+  50%      { box-shadow: 0 0 0 .14em rgba(232, 163, 60, .28); }
+}
+
+.formula-table .ft-pick.filled {
+  border-color: transparent;
+  background-color: transparent;
+}
+.formula-table .ft-pick.filled .ft-num { animation: ftSettle .42s cubic-bezier(.3, 1.5, .5, 1); }
+/* Filled, its number sits on the line's own baseline, level with the
+   text either side. The empty box is a fixed height nudged down a
+   little (vertical-align above) with the number centred in it — right
+   for a box, but a number set that way sat three or four pixels below
+   the words beside it, so the signs between two numbers ("−3 − 1") read
+   as raised. */
+.formula-table .ft-pick.filled {
+  height: auto;
+  vertical-align: baseline;
+  align-items: baseline;
+}
+@keyframes ftSettle { from { transform: scale(1.35); } to { transform: none; } }
+
+/* The scroller: two of the number control's own tiles, stacked, dropping
+   out of the blank. */
+.formula-table .ft-drop {
+  position: absolute; left: 50%; top: calc(100% + .32em);
+  z-index: 3;
+  /* Stretched, so the two tiles of a scroller are one width — the
+     wider number's — and stack as a pair rather than as two sizes. */
+  display: flex; flex-direction: column; align-items: stretch; gap: .14em;
+  pointer-events: auto;
+  transform-origin: top center;
+  transform: translateX(-50%) scaleY(.2) translateY(-.3em);
+  opacity: 0;
+  transition: transform .38s cubic-bezier(.3, 1.4, .5, 1), opacity .25s ease;
+}
+.formula-table .ft-drop.open { transform: translateX(-50%); opacity: 1; }
+.formula-table .ft-drop.fold {
+  pointer-events: none;            /* answered: nothing in it takes a tap */
+  transform: translateX(-50%) scaleY(.2) translateY(-.3em); opacity: 0;
+  transition: transform .3s ease-in, opacity .25s ease-in;
+}
+/* The reel's painted tile, with its brown digits in Lilita One, so the
+   child knows this is the same kind of choosing as the control.
+
+   Laid in nine pieces rather than as one picture, so a tile is as wide
+   as its number needs: the corners keep their shape, the edges and the
+   middle stretch. "100" used to be pressed into the same square as
+   "14", its outer digits on the tile's own rim. Now every number has
+   the same air either side of it, and a short one still gets the
+   square. The picture is region (184, 646, 215, 213) of the button
+   sheet, cut out on its own (assets/tile.webp) — a border image cannot
+   take a region of a sheet. Its corners are 64 of its 215 pixels, and
+   drawn at 64/215 of the square's 1.7em they come out exactly the size
+   they were. The border is there for the image only: it is 0 wide, so
+   none of the tile's room goes to it. The url is written here rather
+   than read through a custom property: a relative url() resolves
+   against the sheet that USES it. */
+.formula-table .ft-tile {
+  box-sizing: border-box;
+  min-width: 1.7em; height: 1.7em;
+  padding: 0 .36em;
+  display: grid; place-items: center;
+  margin: 0;
+  border-style: solid; border-width: 0;
+  border-image: var(--ft-tile) 64 fill / .506em stretch;
+  background: none;
+  font-family: 'Lilita One', 'Nunito', system-ui, sans-serif;
+  /* One weight, and the bold the browser used to fake drawn as a fixed
+     outline — see the reel's digits, number-selector.css. */
+  font-size: .82em; font-weight: 400; line-height: 1;
+  -webkit-text-stroke: .031em currentColor;
+  white-space: nowrap;
+  color: #5E5145;
+  cursor: pointer;
+  transition: transform .15s ease, opacity .3s ease, color .3s ease;
+}
+/* Letters rather than a number (x₂ − x₁): the table's own face and
+   weight, a touch smaller so a four-symbol term sits in the tile with
+   the same air as a number does. */
+.formula-table .ft-tile.ft-word {
+  font-family: 'Nunito', system-ui, sans-serif;
+  font-weight: 700; font-size: .72em;
+  -webkit-text-stroke: 0;
+  height: calc(1.7em * .82 / .72);
+  min-width: calc(1.7em * .82 / .72);
+  padding: 0 .5em;
+  border-image-width: calc(.506em * .82 / .72);
+}
+@media (hover: hover) and (pointer: fine) {
+  .formula-table .ft-tile:hover  { transform: scale(1.06); }
+}
+.formula-table .ft-tile:active { transform: scale(.94); }
+.formula-table .ft-tile:focus-visible { outline: 3px solid #1F6FD0; outline-offset: 2px; }
+/* Wrong: the tile shakes where it is, its number red — at once, and
+   easing back when the shake is done — and it stays to be chosen
+   again. The red is the triangle options' red. */
+.formula-table .ft-tile.no {
+  color: #E23A3A;
+  animation: ftShake .42s ease;
+  transition: none;
+}
+@keyframes ftShake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-.14em); }
+  40% { transform: translateX(.14em); }
+  60% { transform: translateX(-.09em); }
+  80% { transform: translateX(.06em); }
+}
+
+html.calm .formula-table .ft-pick.active { animation: none; }
+html.calm .formula-table .ft-drop, html.calm .formula-table .ft-drop.fold { transition: opacity .2s linear; }
+html.calm .formula-table .ft-tile.no { animation: none; }
+
+/* An inline row (the axis cases): one expression after its = sign,
+   written as it reads, spaces and all, with its slots inside it. */
+.formula-table .ft-inline { justify-self: start; }
+.formula-table .ft-inline .ft-text { white-space: pre; }
+/* Filled, a blank in a line of working closes up to its number, so it
+   reads as written — 4² rather than a 4 in a box's worth of air, apart
+   from its square. */
+.formula-table .ft-inline .ft-pick {
+  transition: min-width .3s ease, padding .3s ease, border-color .3s ease, background-color .3s ease;
+}
+.formula-table .ft-inline .ft-pick.filled {
+  min-width: 0; padding: 0;
+  border-left-width: 0; border-right-width: 0;     /* top and bottom kept: they hold its height */
+}
+/* …all the way: the box was still held at its widest tile's width by
+   the sizer, so a short answer sat in the middle of a wide one —
+   "= 15 units" read as "=   15   units", "( −9 )²" had air inside its
+   brackets. Filled, the sizer lets go and the box is its number's own
+   width (the row reflows once, as the number lands). */
+.formula-table .ft-inline .ft-pick.filled .ft-sizer { display: none; }
+
+/* The tile, declared on the root so the loader (js/preload.js) can point
+   it at the copy it fetched, by setting it on <html>. */
+:root { --ft-tile: url('../assets/tile.webp?v=20260930120459'); }

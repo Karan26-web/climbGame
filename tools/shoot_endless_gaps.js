@@ -40,7 +40,7 @@ function assert(cond, msg) { if (!cond) throw new Error('FAILED: ' + msg); conso
   page.on('pageerror', e => console.log('PAGE ERROR', e.message));
   page.on('console', m => { if (m.type() === 'error') console.log('console.error', m.text()); });
 
-  const url = 'file://' + path.join(root, 'index.html') + '?seed=' + seed;
+  const url = 'file://' + path.join(root, 'index.html') + '?seed=' + seed + '&lesson=0';
   await page.goto(url);
   await page.waitForFunction(() => window.CG && CG.Game && CG.Game.state === 'play', null, { timeout: 20000 });
   await page.waitForTimeout(300);

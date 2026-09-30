@@ -41,10 +41,19 @@
                   filter: drop-shadow(0 .07em 0 #3B1F0C) drop-shadow(0 .12em .06em rgba(40,20,6,.35)); }
   #boot h1 span + span { background-image: linear-gradient(#E4F7FF 0%, #8FDAFF 46%, #4FB2F5 50%, #2A78D8 100%); }
   #boot p { margin: 0; font-size: 14px; opacity: .85; text-shadow: 0 2px 0 rgba(43,33,24,.5); }
+  /* the lesson (learn/), over the game while it plays - see THE LESSON in
+     the GAME module. Fetched unseen (.loading) while the road is being
+     explained, faded up (.up), faded down (.down) when Swifty is done. */
+  #lesson { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; background: #0b1622;
+            display: none; opacity: 0; pointer-events: none; transition: opacity .5s ease; }
+  #lesson.loading { display: block; visibility: hidden; }
+  #lesson.up { display: block; opacity: 1; pointer-events: auto; }
+  #lesson.down { display: block; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+<iframe id="lesson" title="Distance formula lesson" allow="autoplay"></iframe>
 <div id="boot">
   <h1><span>CLIMB</span><span>GAME</span></h1>
   <div id="bar"><div id="fill"></div></div>
@@ -62,8 +71,8 @@
                     testable: tools/sim_test.js extracts this block verbatim
                     and runs it under Node, so it must not touch the DOM)
      ASSETS         image loading
-     AUDIO          WebAudio engine/tyre/pickup synthesis, no audio files
-     WORLD          deterministic chunked props, pickups, particles
+     AUDIO          WebAudio engine/tyre synthesis, sampled one-shots (sfx.js)
+     WORLD          deterministic chunked props, particles
      RENDER         parallax, terrain ribbon, vehicle assembly, HUD
      GAME           loop, camera, input, screens
    ===================================================================== */
@@ -106,7 +115,7 @@ CG.vnoise = function (x, seed) {
   return a + (b - a) * (f * f * (3 - 2 * f));
 };
 
-/* Seeded RNG for world decoration (props, pickups) — mulberry32. */
+/* Seeded RNG for world decoration (props) — mulberry32. */
 CG.rng = function (seed) {
   var s = seed >>> 0;
   return function () {
@@ -314,7 +323,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   function fit(H, k, tan) { return Math.abs(H) * k / (tan || MAX_TAN); }
 
   /* Each builder takes (d, r): d = stage difficulty 0..1, r = seeded rng.
-     Returns { len, h, tags } — tags drive decoration and pickup placement:
+     Returns { len, h, tags } — tags drive decoration:
        rest  flat enough to park on        air   expect the car to leave the ground
        grind sustained traction demand     risk  a real chance of ending the run  */
   var PARTS = CG.PARTS = {
@@ -388,8 +397,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     },
 
     /* Take-off lip, a hole, a landing ramp. Clear it and you keep your speed;
-       miss it and you drive out of the bottom — slowly, and a checkpoint's
-       worth of fuel poorer. Never a dead end. */
+       miss it and you drive out of the bottom — slowly. Never a dead end. */
     gap: function (d, r) {
       var H = 100 + d * 90, D = 130 + d * 120;
       /* the escape ramp (t 0.55 -> 0.90) carries the whole depth plus the
@@ -528,7 +536,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     return out;
   }
 
-  Track.build = function (plan, seed, d) {
+  /* `ruler` is how many marks every chasm on the track gets (see Gaps.RULER). */
+  Track.build = function (plan, seed, d, ruler) {
     var rnd = CG.rng((seed >>> 0) || 1), parts = [], cps = [], chasms = [];
     var x = 0, y = 0, cpNext = false, finishX = -1, i, name, p, entry;
     plan = expand(plan);
@@ -543,7 +552,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
                    h: p.h, tags: p.tags || '', cp: false, index: parts.length };
       if (name === 'chasm') {
         part.exact = true;                       // no fine noise: lips sit on the grid
-        part.gap = CG.Gaps.resolve(x, y, entry.c, p, chasms.length);
+        part.gap = CG.Gaps.resolve(x, y, entry.c, p, chasms.length, ruler);
         part.gap.part = parts.length;
         chasms.push(part.gap);
       }
@@ -611,9 +620,16 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 
   /* The answer is read off a RULER, one unit at a time, so every chasm's
      distance must be a whole number: a horizontal gap, or a Pythagorean
-     triple laid on its side. RULER_MAX is the longest plank the ruler
-     offers; the longest gap in the game is 13. */
-  Gaps.RULER_MAX = 14;
+     triple laid on its side. The ruler comes in two lengths. RULER is the
+     one stages 1-4 and endless's plain first gap use - the longest gap
+     there is 13 (5-12-13) - and RULER_MAX the long one the big triples
+     need (9-12-15, 8-15-17, 12-16-20). Both run one past the longest gap
+     they serve, so even that gap has a too-long plank to lay. The length
+     is a property of the stage (or of where the gap falls in an endless
+     run), never of the gap: a ruler that ended just past the answer would
+     give it away. */
+  Gaps.RULER = 14;
+  Gaps.RULER_MAX = 21;
 
   /* What the panel and the hint need to know about a chasm. Throws on a
      gap whose distance is not whole — that is an authoring error, and it is
@@ -623,7 +639,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var sq = dx * dx + dy * dy, D = Math.round(Math.sqrt(sq));
     if (D * D !== sq) throw new Error('chasm ' + JSON.stringify(gap.a) + '->' + JSON.stringify(gap.b) +
                                       ': distance sqrt(' + sq + ') is not a whole number');
-    if (D > Gaps.RULER_MAX) throw new Error('chasm distance ' + D + ' is longer than the ruler');
+    if (D > gap.ruler) throw new Error('chasm distance ' + D + ' is longer than the ruler (' + gap.ruler + ')');
     return { dx: dx, dy: dy, sq: sq, D: D };
   };
 
@@ -631,10 +647,11 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      and the bot all share — everything the question needs, in world space,
      computed once. `x, y` are the part's own origin (world y grows downward,
      grid y grows upward, hence the sign flips); `p` is the PARTS.chasm build
-     (gives gapX/rise/floor); `index` is only used to label the gap. Shared by
-     the stage builder (Track.build) and endless (CG.Endless) so the geometry
+     (gives gapX/rise/floor); `index` is only used to label the gap; `ruler`
+     is how many marks its ruler has (Gaps.RULER by default). Shared by the
+     stage builder (Track.build) and endless (CG.Endless) so the geometry
      math has one home. */
-  Gaps.resolve = function (x, y, spec, p, index) {
+  Gaps.resolve = function (x, y, spec, p, index, ruler) {
     var U = CG.UNIT;
     var ax = x + p.gapX[0], bx = x + p.gapX[1];
     var ay = CG.BASE_Y - y, by = CG.BASE_Y - (y + p.rise);
@@ -644,6 +661,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       ox: ax - spec[0] * U, oy: ay + spec[1] * U,   // grid origin in world space
       floorY: CG.BASE_Y - (y + p.floor),
       D: Math.hypot(spec[2] - spec[0], spec[3] - spec[1]),
+      ruler: ruler || Gaps.RULER,
       solved: false
     };
     gap.q = Gaps.question(gap);
@@ -668,7 +686,12 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      screen allows between the question (and its lines) and the foreground
      grass. Height-bound (a short gap on a wide screen), the spare width
      becomes more plane to the right - up to 4 columns (padR). Pure: the
-     camera frames with it and Gaps.holdFor plans the row with it. */
+     camera frames with it and Gaps.holdFor plans the row with it.
+     MIN_ZOOM is low enough for the tallest plane in the game - 12-16-20,
+     twelve rows of drop plus the margins, with two lines under the
+     question - to fit a 16:9 screen whole: a plane cut off at the top hides
+     the far point's label, which is half the question. */
+  Gaps.MIN_ZOOM = 0.34;
   Gaps.tightFrame = function (gap, left, Wd, Hd, sub) {
     var U = CG.UNIT, r = Gaps.gridRange(gap, 0);
     var right = gap.ox + (r.maxGX + 0.5) * U + 26;
@@ -676,11 +699,11 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var bandT = 100 + 44 * sub, bandB = Hd - 84, padR = 0;
     var zV = (bandB - bandT) / (bottom - top), zH = 0.97 * Wd / (right - left);
     if (zV < zH) {
-      padR = CG.clamp(Math.floor((0.97 * Wd / Math.min(zV, 1.4) - (right - left)) / U), 0, 4);
+      padR = CG.clamp(Math.floor((0.97 * Wd / CG.clamp(zV, Gaps.MIN_ZOOM, 1.4) - (right - left)) / U), 0, 4);
       right += padR * U;
     }
     return { left: left, right: right, top: top, bottom: bottom, bandT: bandT, bandB: bandB, padR: padR,
-             z: CG.clamp(Math.min(0.97 * Wd / (right - left), zV), 0.5, 1.4) };
+             z: CG.clamp(Math.min(0.97 * Wd / (right - left), zV), Gaps.MIN_ZOOM, 1.4) };
   };
 
   /* Where the saw's outfeed (its right-hand end) stands: just clear of the
@@ -817,15 +840,23 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
    x — the same technique World.features uses for its ramps — spaced to take
    roughly 10-20s at a typical cruising speed, so placement stays a pure
    function of x like everything else here rather than a stateful clock.
-   Gaps come in pairs, in a fixed teaching order that then repeats:
-     1-2  level      both lips at the same height: just count across
-     3-4  uphill     the far lip higher - 5-12-13 is the only triple the truck
-                     can climb (23 deg; 3-4-5 laid uphill is 37 deg)
-     5-6  downhill   the far lip lower - 3-4-5 and 6-8-10 at 37 deg
+   The run opens plain, then meets the triples one at a time:
+     1    level      both lips at the same height: just count across
+     2-7  the intro  3-4-5, 6-8-10, 5-12-13 (up), 9-12-15, 8-15-17 (up),
+                     12-16-20 - one new triple a gap, smallest first
+   and from then on gaps come in pairs, in an order that repeats:
+     level, level    count across
+     uphill x2       5-12-13 or 8-15-17 - the only triples the truck can
+                     climb (23 and 28 deg; the 3-4-5 family is 37 deg)
+     downhill x2     any of the 3-4-5 family, or 8-15-17
+   The plain first gap keeps the short ruler; every gap after it has the
+   long one (CG.Gaps.RULER / RULER_MAX).
    A sloped gap leaves the terrain at a different height than it found it,
    so its exit blend back into the noise is stretched in proportion to that
    step (EXIT_RUN px per px of height), keeping the rejoin drivable instead
-   of a cliff. Every distance is still a whole number.
+   of a cliff - and a triple whose step the road to the next slot could not
+   stretch to EXIT_MIN is not picked there. Every distance is still a whole
+   number.
    A run opens with FREE PLAY: until the game calls E.begin(x) there are no
    chasms at all, just the rolling noise. begin() anchors slot 0 LEAD px
    ahead of the car - past everything already sampled or dressed - and every
@@ -844,15 +875,38 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   var DX_EARLY = [3, 4, 5];
   var DX_LATE = [3, 4, 5, 6, 7, 8, 9, 10];
   var ORDER = ['level', 'level', 'up', 'up', 'down', 'down'];
-  var UP = [[12, 5]];                       // [dx, dy] in grid units
-  var DOWN = [[4, -3], [8, -6]];
+  /* [dx, dy] in grid units. Slot 0 is the plain one - level, count across,
+     on the short ruler - and the next six bring in the triples one per gap,
+     smallest hypotenuse first, the order the stages teach them in. They sit
+     on a fixed beat (no jitter, see slotX0), so even 12-16-20's 864px step
+     gets a full slot of road to climb back to the noise. Only then does
+     ORDER start repeating, every triple in the pools - 8-15-17 both ways,
+     the 3-4-5 family down only (see the triple table over CG.Stages). The
+     first entry of each pool is the gentlest, and always fits (see fits()
+     in slot). */
+  var INTRO = [[4, -3], [8, -6], [12, 5], [12, -9], [15, 8], [16, -12]];
+  var CYCLE0 = INTRO.length + 1;            // the first slot of the repeating ORDER
+  /* THE MISSION. A run is the plain gap and the six triples - MISSION
+     questions - and then the finish: FINISH_RUN px of open road past the
+     last far lip (a few seconds' drive, so the last crossing is savoured),
+     a chequered gate, and YOU DID IT. No slot is laid past it; the repeating
+     ORDER below is what a longer run would draw from. */
+  E.MISSION = CYCLE0;
+  E.FINISH_RUN = 2600;
+  var UP = [[12, 5], [15, 8]];
+  var DOWN = [[4, -3], [8, -6], [12, -9], [15, -8], [16, -12]];
   E.EXIT_RUN = 9;          // adds at most ~9 deg on top of the noise's own slope
+  /* ...and never less than this, whatever the jitter left: a big triple
+     only goes where there is road enough after it to climb (or roll) back
+     to the noise - 12-16-20 leaves the truck 864px below where it found it */
+  E.EXIT_MIN = 5.5;
 
   E.reset = function (seed) {
     E.seed = seed | 0 || 1;
     E.chasms = [];
     E.cache = {};
     E.origin = null;               // no chasms until begin()
+    E.finishX = 0;                 // known once the last slot is resolved
   };
   /* End of free play: the first gap goes in a short drive ahead of x. */
   E.begin = function (x) {
@@ -861,7 +915,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   E.reset(1);
 
   function dxFor(k, salt, lastDx) {
-    var pool = k < ORDER.length ? DX_EARLY : DX_LATE;
+    var pool = k < CYCLE0 ? DX_EARLY : DX_LATE;
     var idx = Math.floor(CG.hash1(k, salt + 1) * pool.length);
     var dx = pool[idx];
     if (dx === lastDx && pool.length > 1) dx = pool[(idx + 1) % pool.length];
@@ -871,8 +925,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   function saltOf(k) { return (E.seed * 7919 + k * 104729) | 0; }
   function slotX0(k) {
     /* slot 0 sits exactly at the anchor: jittering it earlier could land it
-       on ground the player has already seen */
-    return E.origin + k * E.SPACING + (k ? (CG.hash1(k, saltOf(k)) * 2 - 1) * E.JITTER : 0);
+       on ground the player has already seen. The intro, and the slot after
+       it (whose start bounds the last intro gap's exit), keep the beat. */
+    return E.origin + k * E.SPACING + (k > CYCLE0 ? (CG.hash1(k, saltOf(k)) * 2 - 1) * E.JITTER : 0);
   }
 
   /* Resolve slot k into a gap object, memoized. A pure function of (seed, k)
@@ -882,23 +937,38 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   function slot(k) {
     var g = E.cache[k];
     if (g) return g;
-    var salt = saltOf(k), x0 = slotX0(k);
-    var kind = ORDER[k % ORDER.length], dx, dy = 0;
+    if (k >= E.MISSION) return null;          // the road past the finish is plain noise
+    var salt = saltOf(k), x0 = slotX0(k), j = k - CYCLE0;
+    var kind = k === 0 ? 'level' : j < 0 ? (INTRO[k - 1][1] > 0 ? 'up' : 'down') : ORDER[j % ORDER.length];
+    var dx, dy = 0;
     if (kind === 'level') {
       dx = dxFor(k, salt, k > 0 ? slot(k - 1).dx : 0);
+    } else if (j < 0) {
+      dx = INTRO[k - 1][0]; dy = INTRO[k - 1][1];
     } else {
-      var pool = kind === 'up' ? UP : DOWN;
+      /* a triple fits if the road the jitter left before the next slot is
+         EXIT_MIN runs of the step it would leave back to the noise - the
+         same room and step as the exit blend below, worked out for it */
+      var W = CG.CHASM, nextX0 = slotX0(k + 1), base0 = CG.Terrain.rawElevation(x0);
+      var fits = function (t, i) {
+        var endX = x0 + W.APP + t[0] * CG.UNIT + W.RUN, room = nextX0 - E.BLEND - endX - 40;
+        return !i || room >= Math.abs(base0 + t[1] * CG.UNIT - CG.Terrain.rawElevation(endX)) * E.EXIT_MIN;
+      };
+      var pool = (kind === 'up' ? UP : DOWN).filter(fits);
       /* the two gaps of a pair take different triples where there is a choice */
-      var pick = (Math.floor(CG.hash1(k >> 1, saltOf(k & ~1) + 3) * pool.length) + (k & 1)) % pool.length;
+      var pick = (Math.floor(CG.hash1(j >> 1, saltOf(k - (j & 1)) + 3) * pool.length) + (j & 1)) % pool.length;
       dx = pool[pick][0]; dy = pool[pick][1];
     }
-    /* the grid origin wanders a little, so the coordinates are not always (0, 0) */
+    /* the grid origin wanders a little, so the coordinates are not always
+       (0, 0) - and a tall gap keeps it between its lips, where it costs the
+       plane no rows (a row outside them is one the camera cannot spare) */
     var ox = -Math.floor(CG.hash1(k, salt + 5) * Math.min(dx, 4)) | 0;
     var oy = Math.floor(CG.hash1(k, salt + 7) * 3) - 1;
+    if (Math.abs(dy) > 6) oy += Math.round(-dy / 2);
     var spec = [ox, oy, ox + dx, oy + dy];
     var p = CG.PARTS.chasm(0, CG.rng(salt >>> 0), spec);
     var base = CG.Terrain.rawElevation(x0);        // frozen baseline this slot joins from
-    var gap = CG.Gaps.resolve(x0, base, spec, p, k);
+    var gap = CG.Gaps.resolve(x0, base, spec, p, k, k === 0 ? CG.Gaps.RULER : CG.Gaps.RULER_MAX);
     gap.dx = dx; gap.kind = kind; gap.slotX0 = x0; gap.slotLen = p.len; gap.slotBase = base; gap.slotPart = p;
     /* the step between where the gap leaves the ground and where the noise is,
        faded out over a run long enough to drive - but never into the next gap */
@@ -908,6 +978,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     gap.exitBlend = Math.max(E.BLEND, Math.min(room, Math.abs(gap.exitOff) * E.EXIT_RUN));
     E.cache[k] = gap;
     E.chasms.push(gap);
+    if (k === E.MISSION - 1) E.finishX = gap.bx + E.FINISH_RUN;
     return gap;
   }
 
@@ -916,7 +987,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   E.ensure = function (uptoX) {
     if (E.origin === null) return;
     var k = E.chasms.length;
-    while (E.origin + k * E.SPACING - E.JITTER <= uptoX + E.ENSURE_AHEAD) { slot(k); k++; }
+    while (k < E.MISSION && E.origin + k * E.SPACING - E.JITTER <= uptoX + E.ENSURE_AHEAD) { slot(k); k++; }
   };
 
   function slotHeight(g, x) {
@@ -940,6 +1011,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var k0 = Math.max(0, Math.floor((x - E.origin) / E.SPACING) - 1), k, g;
     for (k = k0; k <= k0 + 2; k++) {
       g = slot(k);
+      if (!g) break;
       if (x >= g.slotX0 - E.BLEND && x <= g.slotX0 + g.slotLen + g.exitBlend) return slotHeight(g, x);
     }
     return null;
@@ -1352,12 +1424,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     car: 'vehicle/truck_body.webp',
     wheel: 'vehicle/truck_wheel.webp',
     well: 'vehicle/truck_well.webp',
-    coin: 'pickups/coin_sheet.webp',
-    fuel: 'pickups/fuel_can.webp',
-    gem: 'pickups/gem.webp',
-    boost: 'pickups/boost.webp',
     star: 'pickups/star.webp',
     heart: 'pickups/heart.webp',
+    panel: 'ui/instruction_panel.webp',   // the instruction plate: cream, navy rim, hazard tabs (9-slice, R.plate)
     dust: 'fx/dust_sheet.webp',
     smoke: 'fx/smoke_sheet.webp',
     bush: 'props/bush.webp',
@@ -1389,9 +1458,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     soundOff: 'ui/icon_sound_off.webp'
   };
 
-  /* Sprite-sheet layout, measured by tools/build_assets.py. */
+  /* Sprite-sheet layout: frames per strip and the square frame size. */
   CG.SHEETS = {
-    coin: { frames: 8, frame: 192 },
     dust: { frames: 5, frame: 172 },
     smoke: { frames: 5, frame: 152 },
     chips: { frames: 4, frame: 96 },     // not animated: one particle per frame
@@ -1478,9 +1546,11 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 })(CG);
 
 /* =================================== AUDIO ==================================
-   Everything is synthesised — there are no audio files in the project. The
-   engine is two detuned saws through a lowpass whose cutoff and pitch track
-   wheel speed; tyre noise is filtered white noise gated by slip.            */
+   The engine and the tyres are instruments, synthesised live: two detuned
+   saws through a lowpass whose cutoff and pitch track wheel speed, and
+   filtered white noise gated by slip. One-shots are recordings where a
+   recording is better (assets/audio/sfx.js, embedded so file:// works — see
+   docs/AUDIO.md) and synthesised otherwise.                                 */
 (function (CG) {
   'use strict';
   var A = CG.Audio = {
@@ -1501,7 +1571,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     if (!AC) return;
     var ctx = A.ctx = new AC();
     A.master = ctx.createGain();
-    A.master.gain.value = A.muted ? 0 : 0.9;
+    A.master.gain.value = A.muted || A.ducked ? 0 : 0.9;
     A.master.connect(ctx.destination);
 
     /* --- engine ------------------------------------------------------- */
@@ -1540,7 +1610,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 
   /* ------------------------------------------------------------ embedded
      Recorded cues that must work over file://, where fetch() is refused:
-     base64 WAV, trimmed, looped and levelled by tools/import_sfx.py into
+     base64 Ogg Opus, trimmed, looped and levelled by tools/import_sfx.py into
      assets/audio/sfx.js, which index.html loads as a plain <script> (that
      still works off the disk). A cue missing from it - or the whole file -
      keeps its synthesised version. Sources: art_src/audio/SOURCES.md. */
@@ -1591,6 +1661,47 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       v.src.stop(t + 0.3);
     }
     A.screechV = null;
+  };
+
+  /* THE STOP AT A CHASM, in two cues. brakeGrab is the instant the driver
+     stands on the brake: the tyre screech (one voice, above) with the tyres
+     scrubbing to a halt on gravel under it - a second held voice, so a
+     truck that stands sooner than the recording runs is not still skidding
+     on the spot. brakeStop is the instant it stands: both voices let go,
+     the air brakes hiss off, and a thud goes through the chassis. */
+  A.brakeGrab = function (level) {
+    if (!A.ready || A.muted) return;
+    var t = A.ctx.currentTime;
+    if (!A.screech(level)) burst(t, 0.55, 3400, 0.28, 4);
+    A.skidRelease();
+    var b = A.embedded.skid;
+    if (!b) return;
+    var src = A.ctx.createBufferSource(), g = A.ctx.createGain();
+    src.buffer = b;
+    src.playbackRate.value = 0.96 + 0.1 * level + (Math.random() - 0.5) * 0.04;
+    g.gain.value = SAMPLED.skid * (0.7 + 0.3 * level);
+    src.connect(g); g.connect(A.master);
+    src.start(t);
+    A.skidV = { src: src, g: g, end: t + b.duration / src.playbackRate.value };
+  };
+  A.skidRelease = function () {
+    var v = A.skidV;
+    if (!v || !A.ctx) return;
+    var t = A.ctx.currentTime;
+    if (t < v.end) {
+      v.g.gain.cancelScheduledValues(t);
+      v.g.gain.setTargetAtTime(0, t, 0.05);
+      v.src.stop(t + 0.25);
+    }
+    A.skidV = null;
+  };
+  A.brakeStop = function (level) {
+    if (!A.ready || A.muted) return;
+    var t = A.ctx.currentTime;
+    A.screechRelease(); A.skidRelease();
+    if (!playSample('airbrake', { gain: 0.7 + 0.3 * level })) burst(t + 0.04, 0.7, 5200, 0.14, 0.8);
+    burst(t, 0.28, 520, 0.16 + 0.2 * level, 2);          // the chassis settling on its springs
+    ping(72, t, 0.32, 0.2, 'sine');
   };
 
   /* ---------------------------------------------------------------- pack
@@ -1671,7 +1782,13 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 
   A.setMuted = function (m) {
     A.muted = m;
-    if (A.master) A.master.gain.value = m ? 0 : 0.9;
+    if (A.master) A.master.gain.value = m || A.ducked ? 0 : 0.9;
+  };
+  /* the game's sound under an overlay (the lesson): out, and back to
+     whatever the mute says */
+  A.duck = function (on) {
+    A.ducked = !!on;
+    if (A.master) A.master.gain.value = A.muted || A.ducked ? 0 : 0.9;
   };
 
   /* Continuous engine + tyre state, called every frame. */
@@ -1714,7 +1831,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      cue that repeats (the tick, once per unit) from sounding pasted; opt.rate
      pitches it (the tick climbs as the count goes up), opt.gain scales it. */
   var SAMPLED = { lever: 0.5, tick: 0.34, chop: 0.55, plank: 0.6, slam: 0.85, poof: 0.6,
-                  sink: 0.5, bump: 0.45 };
+                  sink: 0.5, bump: 0.45, skid: 0.75, airbrake: 0.7 };
   function playSample(name, opt) {
     var b = A.embedded[name];
     if (!b) return false;
@@ -1743,10 +1860,11 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       case 'crash': burst(t, 0.75, 1800, 0.42, 1.2); ping(90, t, 0.5, 0.3, 'sawtooth');
                     ping(60, t + 0.08, 0.6, 0.25, 'square'); break;
       case 'flip':  [660, 880, 1100, 1320].forEach(function (f, i) { ping(f, t + i * 0.06, 0.2, 0.14, 'triangle'); }); break;
-      case 'click': ping(760, t, 0.06, 0.16, 'triangle'); break;
+      case 'click': ping(760 * ((opt && opt.rate) || 1), t, 0.06, 0.16, 'triangle'); break;
       case 'over':  [520, 440, 350, 260].forEach(function (f, i) { ping(f, t + i * 0.13, 0.3, 0.18, 'triangle'); }); break;
-      /* checkpoint: a short rising pair — heard mid-drive, so it has to cut
-         through the engine without startling. */
+      /* the question arriving (and the end of free play): a short rising
+         pair — heard over the idling engine, so it has to cut through
+         without startling. */
       case 'check': ping(740, t, 0.1, 0.17, 'triangle'); ping(1110, t + 0.08, 0.2, 0.18, 'triangle');
                     burst(t, 0.18, 2400, 0.08, 1); break;
       /* stage clear: a major arpeggio with a held top note */
@@ -1777,9 +1895,10 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       case 'go':    ping(660, t, 0.1, 0.16, 'triangle'); ping(990, t + 0.1, 0.22, 0.18, 'triangle'); break;
       /* a wrong plank revealing itself */
       case 'wrong': ping(300, t, 0.18, 0.2, 'square'); ping(210, t + 0.14, 0.3, 0.2, 'square'); break;
-      /* the auto-brake grabbing hard at a chasm: a tyre screech and a thud */
-      case 'brake': if (!A.screech(1)) burst(t, 0.55, 3400, 0.28, 4);
-                    ping(130, t, 0.4, 0.22, 'sawtooth'); break;
+      /* a heart lost: two soft falling notes, under the tumble */
+      case 'heart': ping(560, t, 0.16, 0.14, 'triangle'); ping(420, t + 0.12, 0.28, 0.14, 'triangle'); break;
+      /* the auto-brake grabbing hard at a chasm (see A.brakeGrab / brakeStop) */
+      case 'brake': A.brakeGrab(1); break;
     }
   };
 
@@ -1853,10 +1972,10 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 })(CG);
 
 /* =================================== WORLD ==================================
-   Props and pickups live in 800px chunks generated on demand from a seeded
-   RNG, so the decorated world is as endless and as deterministic as the
-   terrain under it. Collected pickups are remembered by id, which stops the
-   player from farming a coin run by reversing over it.                      */
+   Props live in 800px chunks generated on demand from a seeded RNG, so the
+   decorated world is as endless and as deterministic as the terrain under
+   it. Nothing on the road is collectable: the only thing to reach is the
+   next chasm.                                                               */
 (function (CG) {
   'use strict';
   var CHUNK = 800;
@@ -1865,7 +1984,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      so anything short of ~420 can end up drawn through the car on the first
      frame the player sees — which is what a ramp under the title car was. */
   var START_CLEAR = 480;
-  /* no prop or pickup inside this many px of a chasm's hold point / far lip:
+  /* no prop inside this many px of a chasm's hold point / far lip:
      the camera frames the question about this wide, and nothing in that
      frame should be anything but the question */
   var FRAME_CLEAR = 420;
@@ -1880,9 +1999,6 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      truck and the question for the eye. The sprites stay in LIST for stage
      dressing. */
   var PROP_BAG = ['bush', 'bush', 'bush', 'rock', 'rock', 'log'];
-  var PICK_H = { coin: 34, fuel: 46, gem: 34, boost: 44, star: 40, heart: 34 };
-  var PICK_R = { coin: 24, fuel: 30, gem: 24, boost: 28, star: 28, heart: 24 };
-  CG.PICK_H = PICK_H;
 
   var W = CG.World = {
     seed: 1,
@@ -1905,7 +2021,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     },
 
     /* Inside a chasm's stop zone, pit or far lip nothing random may land: a
-       bush on the lip hides the plotted point, a coin in the pit is a lure. */
+       bush on the lip would hide the plotted point. */
     blocked: function (x) {
       var tr = this.track, p = tr && tr.at(x);
       if (p && p.gap) return x > p.gap.stopX - FRAME_CLEAR && x < p.gap.bx + FRAME_CLEAR;
@@ -1930,99 +2046,22 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
                      flip: rnd() < 0.4, back: rnd() < 0.35 });
       }
 
-      /* ---- pickups ---- */
-      var id = 0;
-      function add(type, x, y) {
-        picks.push({ type: type, x: x, y: y, id: ci + ':' + (id++),
-                     ph: rnd() * 6.28, r: PICK_R[type] });
-      }
-
-      /* ---- pathway-driven placement ----------------------------------
-         On a stage the reward follows the authored parts instead of the dice:
-         a coin arc traces the line through every jump, a gem sits on the far
-         side of the risky ones, and every checkpoint carries its own fuel can
-         so the fuel budget is a route decision rather than a lottery. */
-      var tr = this.track, k, cx, part, px, py, f;
-      /* ---- chasm dressing: three coins on the far side as the reason to get
-         across - placed past the edge of the question's frame, so they are
-         found on the way out rather than competing with the plotted points.
-         The warning sign and the rocks on each lip are gone: the auto-brake
-         and the push-in announce the gap, and the rocks sat right behind the
-         points.
-         Shared by stage (tr.chasms) and endless (CG.Endless). ---- */
-      function dressChasm(g) {
-        var i2, px2;
-        for (i2 = 0; i2 < 3; i2++) {
-          px2 = g.bx + FRAME_CLEAR + 40 + i2 * 56;
-          if (px2 >= x0 && px2 < x0 + CHUNK) add('coin', px2, t.ground(px2) - 60);
-        }
-      }
-      if (!tr) CG.Endless.forRange(x0 - 400, x0 + CHUNK + 400, dressChasm);
+      /* ---- no pickups. Coins, fuel cans, gems, boosts, stars and spare
+         hearts have all gone: each was one more thing to read and chase on
+         a road whose only point is the next question. `picks` stays as an
+         empty list so the chunk's shape is unchanged. ---- */
+      var tr = this.track, k, cx;
       if (tr) {
+        /* a stage keeps its checkpoint flags: the one pacing beat on a long
+           pathway, and now only a landmark */
         for (k = 0; k < tr.cps.length; k++) {
           cx = tr.cps[k];
           if (cx < x0 || cx >= x0 + CHUNK) continue;
           s = t.gsample(cx);
           props.push({ kind: 'flagCheck', x: cx, y: s.y, ang: s.ang, h: 108,
                        flip: false, back: false, marker: k + 1, cp: true });
-          add('fuel', cx + 150, t.ground(cx + 150) - 56);
-        }
-        for (k = 0; k < tr.chasms.length; k++) dressChasm(tr.chasms[k]);
-        part = tr.at(x0);
-        for (k = part ? part.index : tr.parts.length; k < tr.parts.length; k++) {
-          part = tr.parts[k];
-          if (part.x0 >= x0 + CHUNK) break;
-          if (part.x0 < x0) continue;                  // placed by an earlier chunk
-          if (part.x0 > tr.finishX) break;             // nothing past the line
-          var air = part.tags.indexOf('air') >= 0;
-          var risk = part.tags.indexOf('risk') >= 0;
-          var grind = part.tags.indexOf('grind') >= 0;
-          if (air) {
-            /* an arc of coins along the flight path, starting at the lip */
-            var n2 = 6, t0 = 0.42, t1 = 0.86;
-            for (i = 0; i < n2; i++) {
-              f = i / (n2 - 1);
-              px = part.x0 + part.len * CG.lerp(t0, t1, f);
-              py = t.ground(px) - 70 - Math.sin(f * Math.PI) * 120;
-              add('coin', px, Math.min(py, t.ground(px) - 60));
-            }
-          }
-          if (risk) {
-            px = part.x0 + part.len * 0.78;
-            add('gem', px, t.ground(px) - 66);
-          }
-          if (grind) {
-            px = part.x0 + part.len * 0.08;
-            add('boost', px, t.ground(px) - 58);
-          }
         }
       }
-      /* nothing is placed past the finish line — the run-out is for stopping */
-      var pastLine = this.track ? x0 > this.track.finishX - 200 : false;
-      if (!pastLine && ci > 0 && rnd() < 0.72) {              // a run of coins
-        var n = 4 + Math.floor(rnd() * 4), gap = 52 + rnd() * 18;
-        var sx = x0 + 60 + rnd() * (CHUNK - n * gap - 120);
-        var lift = 46 + rnd() * 46, arc = rnd() < 0.4 ? 62 : 0;
-        for (i = 0; i < n; i++) {
-          x = sx + i * gap;
-          var f = i / (n - 1);
-          if (this.blocked(x)) continue;
-          add('coin', x, t.ground(x) - lift - Math.sin(f * Math.PI) * arc);
-        }
-      }
-      /* Endless drip-feeds fuel every 5 chunks. A stage does not: its cans sit
-         at the checkpoints, so the tank is a route budget the stage is tuned
-         around rather than a lottery. */
-      var W2 = this;
-      function addFree(type, x, dy) { if (!W2.blocked(x)) add(type, x, t.ground(x) - dy); }
-      if (!pastLine && ci > 1 && ci % (this.track ? 12 : 5) === 1) {
-        addFree('fuel', x0 + 200 + rnd() * 400, 56);
-      }
-      /* Coins, fuel and hearts only. Gems and stars were coins in disguise
-         (+25, +50) and a boost fired the truck at the next chasm behind a
-         full-screen flash: three more things to read, none of them the
-         point. The stage pathways above still place their own. */
-      if (!pastLine && ci > 4 && rnd() < 0.07) addFree('heart', x0 + rnd() * CHUNK, 58);
 
       /* ---- hedgerow: a few more bushes just behind the ridge, so the painted
          tree row behind them never lines up with itself twice. They are WORLD
@@ -3027,9 +3066,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   /* ----------------------------------------------------------- finish gate */
   /* Drawn, not sprited: it has to stay crisp at any zoom and it is the single
      most important thing on the track to be able to read from far away. */
-  R.drawFinish = function (track, time) {
-    if (!track) return;
-    var c = R.ctx, z = R.cam.z, x = track.finishX;
+  R.drawFinish = function (x, time) {
+    if (!x) return;
+    var c = R.ctx, z = R.cam.z;
     if (x < R.cam.x - (R.W / 2 + 300) / z || x > R.cam.x + (R.W / 2 + 300) / z) return;
     var gy = CG.Terrain.ground(x), sxp = R.sx(x), syp = R.sy(gy);
     var h = 240 * z, w = 150 * z, post = 13 * z, band = 52 * z;
@@ -3056,38 +3095,6 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     c.restore();
   };
 
-  /* ---------------------------------------------------------------- pickups */
-  R.drawPickups = function (time) {
-    var c = R.ctx, z = R.cam.z;
-    var wl = R.cam.x - (R.W / 2 + 90) / z, wr = R.cam.x + (R.W / 2 + 90) / z;
-    var sheet = CG.SHEETS.coin;
-    CG.World.each(wl, wr, function (ch) {
-      for (var i = 0; i < ch.picks.length; i++) {
-        var p = ch.picks[i];
-        if (p.x < wl - 60 || p.x > wr + 60 || CG.World.isTaken(p.id)) continue;
-        var bob = Math.sin(time * 2.4 + p.ph) * 5;
-        var sx = R.sx(p.x), sy = R.sy(p.y) + bob * z;
-        var h = CG.PICK_H[p.type] * z;
-        if (p.type === 'coin') {
-          var im = CG.img.coin;
-          if (!im) continue;
-          var fr = Math.floor(time * 11 + p.ph * 3) % sheet.frames;
-          c.drawImage(im, fr * sheet.frame, 0, sheet.frame, sheet.frame,
-                      sx - h / 2, sy - h / 2, h, h);
-        } else {
-          var im2 = CG.img[p.type];
-          if (!im2) continue;
-          var w = h * (im2.width / im2.height);
-          /* soft glow so pickups read against busy grass — one pre-rendered
-             sprite, rather than a fresh radial gradient per pickup per frame */
-          var gl = R.glow();
-          var gs = h * 1.9;
-          c.drawImage(gl, sx - gs / 2, sy - gs / 2, gs, gs);
-          c.drawImage(im2, sx - w / 2, sy - h / 2, w, h);
-        }
-      }
-    });
-  };
 
   R.glow = function () {
     if (R.cache.glow) return R.cache.glow;
@@ -3175,6 +3182,29 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     R.roundRect(x + 5, y + 4, w - 10, h * 0.42, Math.max(0, r - 4));
     c.fillStyle = 'rgba(255,255,255,0.4)'; c.fill();
     c.restore();
+  };
+
+  /* THE INSTRUCTION PLATE (assets/ui/instruction_panel.webp): a cream board
+     in a navy rim with two screws at the top and hazard-striped tabs at the
+     bottom corners - the machine's own livery, so the road's instructions
+     read as part of its kit. Drawn as a 9-slice so it takes any width and
+     height: the corners keep their shape at scale k (= h / the art's
+     height), the edges and the middle stretch. Falls back to the glass
+     pill until the art is in. PLATE.text is where the words go: the cream
+     between the screws and the bottom step, as fractions of the height. */
+  var PLATE = { L: 364, R: 345, T: 190, B: 213, W: 1969, H: 533, text: { top: 0.09, bottom: 0.82 } };
+  R.PLATE = PLATE;
+  R.plate = function (x, y, w, h) {
+    var im = CG.img.panel, c = R.ctx;
+    if (!im) { R.glass(x, y, w, h, Math.min(22, h * 0.3)); return; }
+    var k = h / PLATE.H, L = PLATE.L * k, Rw = PLATE.R * k, T = PLATE.T * k, B = PLATE.B * k;
+    var midW = Math.max(1, w - L - Rw), midH = Math.max(1, h - T - B);
+    var sx = [0, PLATE.L, PLATE.W - PLATE.R, PLATE.W], sy = [0, PLATE.T, PLATE.H - PLATE.B, PLATE.H];
+    var dx = [x, x + L, x + L + midW, x + w], dy = [y, y + T, y + T + midH, y + h];
+    for (var i = 0; i < 3; i++) for (var j = 0; j < 3; j++) {
+      c.drawImage(im, sx[i], sy[j], sx[i + 1] - sx[i], sy[j + 1] - sy[j],
+                  dx[i], dy[j], dx[i + 1] - dx[i] + (i < 2 ? 0.6 : 0), dy[j + 1] - dy[j] + (j < 2 ? 0.6 : 0));
+    }
   };
 
   /* A little blue ruler, tilted, for the question pill. */
@@ -3591,18 +3621,24 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 
   /* on the paper: an orange span, a blue up-leg, leg numbers on a sheet-coloured halo */
   var SPAN_COL = X_COL, LEG_Y = '#2F6FE0', HALO_DARK = 'rgba(246,242,255,0.95)';
-  R.drawGapPoints = function (gap, alpha, legs, bAlpha) {
-    var aA = alpha, aB = bAlpha === undefined ? alpha : bAlpha;
+  /* `o` is what is up, each 0..1: the beads (a, b), their coordinate labels
+     (la, lb), the light on a label as it lands (ha, hb), the dashed span
+     between the points (span), and whether the hint's legs are drawn. The
+     beads and labels outlive the plane: they stay while the plank is cut
+     and fitted between them. */
+  R.drawGapPoints = function (gap, o) {
+    var aA = o.a, aB = o.b;
     if (!gap || Math.max(aA, aB) <= 0.01) return;
     var c = R.ctx, z = R.cam.z;
     var ax = R.sx(gap.ax), ay = R.sy(gap.ay), bx = R.sx(gap.bx), by = R.sy(gap.by);
     var rpx = 1 / (R.cssK || 1);
     var lw = CG.clamp(3.5 * z, Math.max(3, 2.2 * rpx), Math.max(4.5, 2.2 * rpx));
     var dash = [CG.clamp(12 * z, 9, 14) * Math.max(1, rpx * 0.6), CG.clamp(8 * z, 6, 10) * Math.max(1, rpx * 0.6)];
+    var legs = o.legs, spanA = Math.min(aA, aB) * (o.span === undefined ? 1 : o.span);
     c.save();
-    c.globalAlpha = Math.min(aA, aB);
+    c.globalAlpha = spanA;
     c.lineCap = 'round';
-    if (legs) {
+    if (legs && spanA > 0.01) {
       /* the hint: the right triangle under the plank's line - across in
          orange, up in blue - each leg measured */
       var q = gap.q, cx = bx, cy = ay;              // the corner under B, level with A
@@ -3614,18 +3650,21 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       if (ll[1]) haloText(ll[1].t, ll[1].x, ll[1].y, ll[1].s, LEG_Y, 'center', HALO_DARK);
     }
     /* THE SPAN TO MEASURE: a dashed line from point to point - the plank's
-       own line, which is what the question asks the length of */
-    c.setLineDash(dash); c.lineWidth = lw; c.strokeStyle = SPAN_COL;
-    c.beginPath(); c.moveTo(ax, ay); c.lineTo(bx, by); c.stroke();
-    c.setLineDash([]);
+       own line, which is what the question asks the length of. It goes
+       with the plane once the answer is in: the plank takes its place. */
+    if (spanA > 0.01) {
+      c.setLineDash(dash); c.lineWidth = lw; c.strokeStyle = SPAN_COL;
+      c.beginPath(); c.moveTo(ax, ay); c.lineTo(bx, by); c.stroke();
+      c.setLineDash([]);
+    }
     c.lineCap = 'butt';
 
     /* the two points land one after the other, each with a little bounce, so
        the question builds itself in front of the player rather than appearing
-       fully formed */
-    [[ax, ay, gap.a, aA, 'a'], [bx, by, gap.b, aB, 'b']].forEach(function (p) {
+       fully formed; their coordinates follow, each lighting up as it lands */
+    [[ax, ay, gap.a, aA, 'a', o.la, o.ha], [bx, by, gap.b, aB, 'b', o.lb, o.hb]].forEach(function (p) {
       if (p[3] <= 0.01) return;
-      var lb = R.labelBox(gap, p[4]), r = lb.r;
+      var lb = R.labelBox(gap, p[4]), r = lb.r, la = p[5] === undefined ? p[3] : p[5], hi = p[6] || 0;
       c.save();
       c.globalAlpha = p[3];
       var pop = 1 + 0.4 * Math.sin(Math.min(1, p[3]) * Math.PI);
@@ -3641,10 +3680,27 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       sg.addColorStop(0, '#FFC874'); sg.addColorStop(1, X_COL);
       c.fillStyle = sg; c.fill();
       c.lineWidth = Math.max(1.2, r * 0.14); c.strokeStyle = '#E07F00'; c.stroke();
-      /* its coordinates: deep purple on a white pill edged in violet */
+      c.restore();
+      if (la <= 0.01) return;
+      /* its coordinates: deep purple on a white pill edged in violet, landing
+         with a pop of its own and lit in orange for a moment - the thing to
+         read is here */
+      c.save();
+      c.globalAlpha = p[3] * la;
+      var lp = 1 + 0.5 * Math.sin(Math.min(1, la) * Math.PI);
+      c.translate(lb.x, lb.y); c.scale(lp, lp); c.translate(-lb.x, -lb.y);
+      if (hi > 0.01) {
+        var hw = lb.w + 10 + 8 * hi, hh = lb.h + 10 + 8 * hi;
+        c.save();
+        c.shadowColor = 'rgba(255,159,28,' + (0.9 * hi).toFixed(3) + ')'; c.shadowBlur = 22 * hi + 6;
+        R.roundRect(lb.x - hw / 2, lb.y - hh / 2, hw, hh, hh * 0.4);
+        c.lineWidth = Math.max(2, lb.fs * 0.14); c.strokeStyle = 'rgba(255,175,60,' + (0.85 * hi).toFixed(3) + ')';
+        c.stroke();
+        c.restore();
+      }
       R.roundRect(lb.x - lb.w / 2, lb.y - lb.h / 2, lb.w, lb.h, lb.h * 0.32);
       c.fillStyle = 'rgba(255,255,255,0.96)'; c.fill();
-      c.lineWidth = Math.max(1.5, lb.fs * 0.1); c.strokeStyle = LABEL_EDGE; c.stroke();
+      c.lineWidth = Math.max(1.5, lb.fs * 0.1); c.strokeStyle = hi > 0.01 ? 'rgba(255,159,28,' + (0.45 + 0.55 * hi).toFixed(3) + ')' : LABEL_EDGE; c.stroke();
       c.font = R.font(lb.fs, false, 800);
       c.textAlign = 'center'; c.textBaseline = 'middle';
       c.fillStyle = COORD_TEXT; c.fillText(R.pair(p[2]), lb.x, lb.y + lb.fs * 0.04);
@@ -4074,7 +4130,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     c.fillText(str, x, y);
   };
 
-  /* Small caps label, tracked out: DISTANCE, COINS EARNED, BEST. */
+  /* Small caps label, tracked out: PLANKS, "4 planks fitted this run". */
   R.label = function (str, x, y, size, fill, align) {
     var c = R.ctx;
     c.save();
@@ -4167,8 +4223,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     return total;
   };
 
-  /* A painted wooden board: headline signs (OUT OF FUEL!, PAUSED). `ropes`
-     hangs it from the top of the screen. */
+  /* A painted wooden board: headline signs (YOU DID IT!, OUT OF HEARTS!,
+     PAUSED). `ropes` hangs it from the top of the screen. */
   R.woodSign = function (cx, cy, w, h, opt) {
     var c = R.ctx, x = cx - w / 2, y = cy - h / 2, r = Math.min(22, h * 0.22), i;
     opt = opt || {};
@@ -4359,80 +4415,85 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 })(CG);
 
 /* ================================== STAGES ==================================
-   The objective. A run is one stage: reach the flag before the fuel or the
-   lives run out. Three stars per stage — finishing is one, the par time is the
-   second, the coin goal is the third — so a stage stays worth replaying after
-   it is beaten.
+   The objective. A run is one stage: fit every plank and reach the flag
+   before the three hearts run out. Stars are the hearts still held at the
+   flag — one for finishing, three for a clean run — so a stage stays worth
+   replaying after it is beaten.
 
    `plan` is the pathway: the ordered list of parts from the PATHWAY module.
-   'CP' marks the next part as a checkpoint (it should be a `shelf` — level
-   ground to respawn onto); 'FINISH' puts the line at the start of the part
-   after it, which is always the long level `finish` run-out.
+   'CP' plants a checkpoint flag on the part that follows (a `shelf` — level
+   ground; the flag is the one pacing beat on a long climb); 'FINISH' puts
+   the line at the start of the part after it, which is always the long
+   level `finish` run-out.
 
-   `par` and `coins` are not guesses: tools/stage_test.js drives every stage
-   headlessly with a bot and prints the achieved time and the coins on the
-   track. Re-run it after changing a plan.                                    */
+   tools/stage_test.js drives every stage headlessly with a bot and prints
+   its length, time, chasm count, respawns and steepest grade. Re-run it
+   after changing a plan, to be sure it can still be finished.               */
 (function (CG) {
   'use strict';
 
   /* A chasm entry is `{ c: [x1, y1, x2, y2] }` — the two lips, plotted. The
      answer is read off a ruler, so every distance is a whole number: a
-     horizontal gap, or a Pythagorean triple (3-4-5, 6-8-10, 5-12-13) laid on
-     its side. The plank's slope is the one physical constraint: the car
-     climbs a sustained 30 deg at most, so the only UPHILL triple is 5-12-13
-     (23 deg); 3-4-5 and 6-8-10 always run downhill. The curriculum goes
-     horizontal, then downhill triples, then the long climb, then everything
-     in every quadrant. */
+     horizontal gap, or one of the six Pythagorean triples with a
+     hypotenuse of 20 or less laid on its side:
+       3-4-5    6-8-10   9-12-15   12-16-20    one shape, x1 x2 x3 x4 (37 deg)
+       5-12-13  8-15-17                         the two others (23, 28 deg)
+     The plank's slope is the one physical constraint: the car climbs a
+     sustained 30 deg at most, so the only UPHILL triples are 5-12-13 and
+     8-15-17; the 3-4-5 family always runs downhill, and its two big ones
+     only on the long side (12-16-20 laid on its short side, 53 deg, is a
+     drop the truck noses into). Stage 1 is plain - level gaps, count
+     across - and each stage after it brings in one new triple, smallest
+     hypotenuse first, reviewing the ones before: 3-4-5, 6-8-10, 5-12-13,
+     9-12-15, 8-15-17, 12-16-20, and GOLDEN SUMMIT asks all six. From the
+     first answer longer than 14 (stage 5) the ruler is the long one
+     (`ruler`, see CG.Gaps.RULER; stages without one get the short ruler). */
   CG.Stages = [
     { id: 1, name: 'MEADOW START', sub: 'distance along a line', seed: 1101, d: 0.12,
-      par: 25, coins: 235, fuel: 100,
       plan: ['start', { c: [-2, -2, 3, -2] }, 'rollers', { c: [-4, -2, 2, -2] },
              'CP', 'shelf', 'washboard', { c: [1, -1, 5, -1] }, 'rollers',
              'FINISH', 'finish'] },
 
     { id: 2, name: 'BLOSSOM TRAIL', sub: 'down the slope: 3-4-5', seed: 2214, d: 0.25,
-      par: 30, coins: 235, fuel: 100,
       plan: ['start', { c: [-3, -1, 4, -1] }, 'rollers', { c: [-2, -1, 2, -4] },
              'CP', 'shelf', 'crest', { c: [-1, -1, 5, -1] }, 'washboard', { c: [-1, -1, 3, -4] },
              'FINISH', 'finish'] },
 
-    { id: 3, name: 'ORCHARD CLIMB', sub: 'the long climb: 5-12-13', seed: 3307, d: 0.38,
-      par: 35, coins: 220, fuel: 100,
-      plan: ['start', { c: [-2, -1, 2, -4] }, 'rollers', 'climb', { c: [-6, -2, 6, 3] },
+    { id: 3, name: 'ORCHARD CLIMB', sub: 'twice the size: 6-8-10', seed: 3307, d: 0.38,
+      plan: ['start', { c: [-2, -1, 2, -4] }, 'rollers', 'climb', { c: [-5, 2, 3, -4] },
              'CP', 'shelf', 'washboard', { c: [-4, 1, 4, -5] }, 'rollers',
              'CP', 'shelf', { c: [0, -2, 5, -2] }, 'crest', 'FINISH', 'finish'] },
 
-    { id: 4, name: 'SUNSET RIDGE', sub: 'steeper drops', seed: 4419, d: 0.50,
-      par: 35, coins: 265, fuel: 90,
+    { id: 4, name: 'SUNSET RIDGE', sub: 'the long climb: 5-12-13', seed: 4419, d: 0.50,
       plan: ['start', { c: [-3, -1, 5, -1] }, 'rollers', { c: [-2, -1, 1, -5] },
-             'CP', 'shelf', 'crest', { c: [-6, 1, 6, -4] }, 'washboard', { c: [-5, -1, 3, -7] },
+             'CP', 'shelf', 'crest', { c: [-6, -2, 6, 3] }, 'washboard', { c: [-5, -1, 3, -7] },
              'CP', 'shelf', 'rollers', 'FINISH', 'finish'] },
 
-    { id: 5, name: 'WIND GAP', sub: 'triples both ways', seed: 5523, d: 0.62,
-      par: 40, coins: 225, fuel: 90,
+    { id: 5, name: 'WIND GAP', sub: 'scaled up: 9-12-15', seed: 5523, d: 0.62,
+      ruler: 21,
       plan: ['start', { c: [-4, -3, 8, 2] }, 'rollers', 'descent', { c: [-3, -3, 3, -3] },
-             'CP', 'shelf', 'climb', { c: [-7, -1, 5, -6] }, 'washboard', { c: [-2, -1, 2, -4] },
+             'CP', 'shelf', 'climb', { c: [-6, 2, 6, -7] }, 'washboard', { c: [-2, -1, 2, -4] },
              'CP', 'shelf', 'rollers', 'crest', 'FINISH', 'finish'] },
 
-    { id: 6, name: 'THUNDER STEPS', sub: 'every quadrant', seed: 6631, d: 0.72,
-      par: 45, coins: 330, fuel: 85,
-      plan: ['start', { c: [-5, -2, 4, -2] }, 'rollers', { c: [-6, -1, 2, -7] },
-             'CP', 'shelf', 'crest', 'descent', { c: [-1, -4, 11, 1] }, 'washboard',
-             'CP', 'shelf', { c: [-3, -1, 1, -4] }, 'rollers', { c: [-4, -3, 7, -3] },
+    { id: 6, name: 'THUNDER STEPS', sub: 'steeper climb: 8-15-17', seed: 6631, d: 0.72,
+      ruler: 21,
+      plan: ['start', { c: [-5, -2, 4, -2] }, 'rollers', { c: [-3, 4, 9, -5] },
+             'CP', 'shelf', 'crest', 'descent', { c: [-7, -1, 8, 7] }, 'washboard',
+             'CP', 'shelf', { c: [-9, 4, 6, -4] }, 'rollers', { c: [-4, -3, 7, -3] },
              'FINISH', 'finish'] },
 
-    { id: 7, name: 'HIGH MEADOW', sub: 'no room for error', seed: 7741, d: 0.85,
-      par: 45, coins: 440, fuel: 85,
+    { id: 7, name: 'HIGH MEADOW', sub: 'the big drop: 12-16-20', seed: 7741, d: 0.85,
+      ruler: 21,
       plan: ['start', { c: [-4, -3, 8, 2] }, 'climb', { c: [-8, -1, 0, -7] },
              'CP', 'shelf', 'rollers', { c: [-6, -2, 6, -2] }, 'crest', { c: [-2, -5, 2, -8] },
-             'CP', 'shelf', 'washboard', { c: [-3, -1, 9, -6] }, 'descent',
+             'CP', 'shelf', 'washboard', { c: [-8, 3, 8, -9] }, 'descent',
              'FINISH', 'finish'] },
 
-    { id: 8, name: 'GOLDEN SUMMIT', sub: 'everything you have', seed: 8853, d: 1.0,
-      par: 60, coins: 430, fuel: 80,
-      plan: ['start', { c: [-5, -1, 7, 4] }, 'rollers', 'climb', { c: [-9, -1, 3, -6] },
-             'CP', 'shelf', 'crest', { c: [-7, -1, 1, -7] }, 'washboard', { c: [-2, -6, 6, -6] },
-             'CP', 'shelf', 'descent', { c: [-8, -4, 4, 1] }, 'rollers', { c: [-4, -1, 0, -4] },
+    { id: 8, name: 'GOLDEN SUMMIT', sub: 'all six triples', seed: 8853, d: 1.0,
+      ruler: 21,
+      plan: ['start', { c: [-5, -1, 7, 4] }, 'rollers', 'climb', { c: [-3, 4, 9, -5] },
+             'CP', 'shelf', 'crest', { c: [-7, -1, 1, -7] }, 'washboard', { c: [-10, -3, 5, 5] },
+             'CP', 'shelf', 'descent', { c: [-4, -1, 0, -4] }, 'rollers', { c: [-8, 4, 8, -8] },
              'CP', 'shelf', 'rollers', 'FINISH', 'finish'] }
   ];
 
@@ -4441,7 +4502,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 
   CG.buildStage = function (i) {
     var st = CG.Stages[i];
-    return CG.Track.build(st.plan, st.seed, st.d);
+    return CG.Track.build(st.plan, st.seed, st.d, st.ruler);
   };
 })(CG);
 
@@ -4457,25 +4518,131 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     mode: 'stage',           // stage | endless
     v: null,
     stageIdx: 0, stage: null, track: null,
-    time: 0, dist: 0, coins: 0, fuel: 100, safety: 0, clock: 0, idleT: 0, blockGlow: 0, maxX: 0, lastX: 0,
-    lives: 3, cpIdx: -1, cpX: 0, progress: 0,
+    time: 0, dist: 0, clock: 0, idleT: 0, blockGlow: 0, maxX: 0, lastX: 0,
+    lives: 3, heartT: 0,     // hearts left, and the pop of the one just lost
     stars: 0, wonStars: 0, winT: 0,
-    best: 0, bank: 0,
-    boostT: 0, deadT: 0, invuln: 0,
-    reason: '', newBest: false, runCoins: 0,
+    invuln: 0,
+    reason: '', newBest: false,
     gap: null,               // the chasm sequence in progress (see CHASMS below)
-    gapCount: 0, firstTry: 0,
-    prog: {},                // stage id -> { s: stars, t: best time, c: best coins }
+    gapCount: 0, firstTry: 0, crossed: 0,
+    prog: {},                // stage id -> { s: stars, t: best time }
     input: { gas: 0, brake: 0, boost: false },
     muted: false,
     seed: 1
   };
 
-  var FUEL_MAX = 100, FUEL_DRIVE = 3.4, FUEL_IDLE = 1.0, FUEL_CAN = 34;
-  var CP_FUEL = 30;                  // a checkpoint tops the tank up by this
+  /* THE ONE RESOURCE. Three hearts for the run; a wrong plank costs one, and
+     nothing else does - not a roll, not a crash, not time. The game does not
+     teach the distance formula (that is the lesson it sits inside), so the
+     hearts are what give a run a shape: get the planks right, or go back to
+     the lesson and come again. There is no fuel, no clock, no coins: nothing
+     on the screen but the hearts, the road and the question. */
   var LIVES = 3;
   var buttons = [], pointers = {}, keys = {};
+  G.buttons = buttons;               // what is tappable this frame, for the tools
   var acc = 0, dustT = 0, smokeT = 0, lastSafeX = 0, lastSafeT = 0;
+
+  /* ============================== THE LESSON ==============================
+     The distance-formula lesson (learn/ - Swifty's Adventure) is the
+     teaching; this game is the practice. The first time a player reaches a
+     chasm the game stops to say why the road needs the maths - three lines,
+     each with the thing it names lit: the broken road, its two ends, the
+     plane - and then the lesson opens over the game in an <iframe>. When
+     Swifty says "Let's head back and bridge that gap!" the lesson tells the
+     page it is over (learn/js/embed.js), the overlay fades, and the
+     question is asked exactly as it always is: machine, points, plane,
+     coordinates, ruler.
+
+     Once per visit: every load of the page has the lesson at its first chasm
+     (shared classroom devices - nothing about it is remembered between
+     visits); PLAY AGAIN within the visit goes straight to the question.
+     ?lesson=0 skips it (the screenshot tools do). BACK TO THE LESSON on the end
+     screens opens the same overlay; finished from there, a fresh run
+     starts. A lesson that never says it is up (the folder missing, say) is
+     put away after LESSON_WAIT seconds and the road carries on without it.
+     An external lesson instead: set LEARN_URL, or pass ?learn=<url>. */
+  var LESSON_URL = 'learn/index.html?embed=1';
+  var LESSON_WAIT = 12;
+  G.lesson = { done: false, force: false, off: false, frame: null, loaded: false,
+               ready: false, up: false, waitT: 0, onDone: null };
+  G.LEARN_URL = '';
+
+  function lessonWanted() { return G.lesson.force || (!G.lesson.done && !G.lesson.off); }
+
+  function lessonFrame() {
+    var L = G.lesson, f;
+    if (L.frame) return L.frame;
+    f = document.getElementById('lesson');
+    if (!f) return null;
+    L.frame = f;
+    window.addEventListener('message', function (e) {
+      var d = e.data;
+      if (!d || typeof d !== 'object' || e.source !== f.contentWindow) return;
+      if (d.type === 'distance-formula:ready') L.ready = true;
+      else if (d.type === 'distance-formula:complete') lessonDone();
+    });
+    return f;
+  }
+
+  /* fetched unseen, so it is there by the time the road has been explained */
+  function loadLesson() {
+    var f = lessonFrame(), L = G.lesson;
+    if (!f) return;
+    if (!L.loaded) { L.loaded = true; L.ready = false; f.src = LESSON_URL; }
+    if (!L.up) f.classList.add('loading');
+  }
+
+  function showLesson(onDone) {
+    var f = lessonFrame(), L = G.lesson;
+    L.onDone = onDone || null; L.up = true; L.waitT = 0;
+    if (!f) { lessonDone(); return; }
+    loadLesson();
+    void f.offsetWidth;                     // so the fade-up is a fade
+    f.classList.remove('loading', 'down'); f.classList.add('up');
+    A.duck(true);
+    setTimeout(function () { if (L.up) { try { f.focus(); } catch (e) {} } }, 120);
+  }
+
+  function hideLesson() {
+    var f = G.lesson.frame, L = G.lesson;
+    L.up = false;
+    A.duck(false);
+    if (!f) return;
+    f.classList.remove('up', 'loading'); f.classList.add('down');
+    setTimeout(function () {
+      if (L.up) return;
+      f.classList.remove('down');
+      f.src = 'about:blank'; L.loaded = false; L.ready = false;   // next time, from its title
+    }, 550);
+    try { window.focus(); } catch (e) {}
+  }
+
+  /* Swifty is done: remembered, put away, and whatever was waiting goes on */
+  function lessonDone() {
+    var L = G.lesson, fn;
+    if (!L.up) return;
+    L.done = true; L.force = false;
+    hideLesson();
+    A.sfx('check');
+    fn = L.onDone; L.onDone = null;
+    if (fn) fn();
+  }
+
+  /* a lesson that never says it is up is not waited for */
+  function lessonTick(dt) {
+    var L = G.lesson;
+    if (!L.up || L.ready) return;
+    L.waitT += dt;
+    if (L.waitT < LESSON_WAIT) return;
+    L.onDone = null; L.off = true;
+    hideLesson();
+  }
+
+  G.toLearn = function () {
+    var url = G.learnUrl || G.LEARN_URL;
+    if (url) { location.href = url; return; }
+    showLesson(function () { G.restart(); });
+  };
 
   /* FREE PLAY. An endless run opens with no chasm in sight: the physics, the
      pickups, flips and big air all run, but a crash only puts the truck back
@@ -4506,31 +4673,26 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   /* -------------------------------------------------------------- storage */
   function load() {
     try {
-      G.best = +(localStorage.getItem('cg_best') || 0) || 0;
-      G.bank = +(localStorage.getItem('cg_coins') || 0) || 0;
       G.muted = localStorage.getItem('cg_muted') === '1';
       G.prog = JSON.parse(localStorage.getItem('cg_prog') || '{}') || {};
-      G.learned = JSON.parse(localStorage.getItem('cg_learned') || '{}') || {};
-    } catch (e) { G.prog = {}; G.learned = {}; /* file:// or private mode — run without persistence */ }
+    } catch (e) { G.prog = {}; /* file:// or private mode — run without persistence */ }
   }
   function save() {
     try {
-      localStorage.setItem('cg_best', String(Math.round(G.best)));
-      localStorage.setItem('cg_coins', String(Math.round(G.bank)));
       localStorage.setItem('cg_muted', G.muted ? '1' : '0');
+      localStorage.removeItem('cg_lesson');            // an earlier build kept the lesson per device
       localStorage.setItem('cg_prog', JSON.stringify(G.prog));
-      localStorage.setItem('cg_learned', JSON.stringify(G.learned || {}));
     } catch (e) {}
   }
 
-  /* A ruler tip ('open', 'pick', 'drop') is shown until the player has done
-     that step once; after that it is only clutter. Remembered across runs. */
+  /* THE NUDGE AT THE FIRST GAP. Each step of answering ('open' the ruler,
+     'pick' a mark, 'drop' the plank) is shown - a glow on the very control,
+     a pointer and one line of what to do - until the player has done it once
+     this run. It is guidance for the interaction, not for the maths, and it
+     is gone by the second gap. Per run, not remembered: a run is where a
+     first attempt happens. */
   G.learned = {};
-  function learn(step) {
-    if (G.learned[step]) return;
-    G.learned[step] = 1;
-    save();
-  }
+  function learn(step) { G.learned[step] = 1; }
 
   /* ------------------------------------------------------------ progress */
   G.record = function (id) { return G.prog[id] || null; };
@@ -4552,16 +4714,16 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   function beginRun(x) {
     FX.reset();
     CG.Terrain.setPlanks([]);
-    G.gap = null; G.firstTry = 0;
-    G.gapCount = G.track ? G.track.chasms.length : 0;
+    G.gap = null; G.firstTry = 0; G.crossed = 0;
+    G.gapCount = G.track ? G.track.chasms.length : (G.mode === 'endless' ? CG.Endless.MISSION : 0);
     G.v = new CG.Vehicle(CG.Terrain);
     G.v.reset(x);
     G.v.headLean = 0;
-    G.time = 0; G.dist = 0; G.coins = 0; G.runCoins = 0;
-    G.safety = 0; G.boostT = 0; G.deadT = 0; G.invuln = 0;
+    G.time = 0; G.dist = 0;
+    G.lives = LIVES; G.heartT = 0; G.invuln = 0;
+    G.learned = {};
     G.idleT = 0; G.blockGlow = 0; G.maxX = G.lastX = x;
     G.reason = ''; G.newBest = false; G.stars = 0; G.wonStars = 0; G.winT = 0;
-    G.progress = 0;
     G.freePlay = G.mode === 'endless'; G.freeT = 0; G.freeX0 = x / CG.PPM;
     CG.Env.reset(G.seed);
     lastSafeX = G.v.x; lastSafeT = 0;
@@ -4570,7 +4732,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     G.state = 'play';
   }
 
-  /* One stage = one authored pathway, a fuel budget and three lives. */
+  /* One stage = one authored pathway and three hearts. */
   G.startStage = function (i) {
     i = CG.clamp(i | 0, 0, CG.Stages.length - 1);
     var st = CG.Stages[i];
@@ -4579,7 +4741,6 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     G.track = CG.buildStage(i);
     CG.Terrain.setTrack(G.track);
     CG.World.init(st.seed, G.track);
-    G.fuel = st.fuel; G.lives = LIVES; G.cpIdx = -1; G.cpX = 0;
     beginRun(160);
     A.music(true);
   };
@@ -4591,7 +4752,6 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     CG.Terrain.setTrack(null);
     CG.Endless.reset(G.seed);
     CG.World.init(G.seed, null);
-    G.fuel = FUEL_MAX; G.lives = 1; G.cpIdx = -1; G.cpX = 0;
     beginRun(160);
   };
 
@@ -4621,7 +4781,6 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     G.v = new CG.Vehicle(CG.Terrain);
     G.v.reset(300);
     G.v.headLean = 0;
-    G.fuel = FUEL_MAX;
     R.cam.x = G.v.x + 0.12 * R.W; R.cam.y = G.v.y - 62; R.cam.z = 1.12;
     G.state = 'title';
   };
@@ -4632,124 +4791,63 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   };
 
   /* -------------------------------------------------------- stage outcome */
-  function starsFor(st) {
-    var n = 1;                                   // finishing is always one star
-    if (G.time <= st.par) n++;
-    if (G.coins >= st.coins) n++;
-    return n;
-  }
+  /* Stars are the hearts still held at the line: a clean run is three. */
+  function starsFor() { return CG.clamp(G.lives, 1, 3); }
 
-  function finishStage() {
+  /* THE LINE. The truck is over the finish: the run is won, with the hearts
+     it still holds for stars. The sign comes down over the next second
+     (drawWin) while the driver eases off - so the crossing is seen before
+     it is announced. */
+  function finishRun() {
     if (G.state !== 'play') return;
     G.state = 'win';
     G.winT = 0; G.starsPopped = 0;
-    G.stars = starsFor(G.stage);
-    G.bank += G.coins;
-    var id = G.stage.id, r = G.prog[id];
-    G.newBest = !r || G.time < r.t;
-    G.prog[id] = {
-      s: Math.max(r ? r.s : 0, G.stars),
-      t: r ? Math.min(r.t, G.time) : G.time,
-      c: Math.max(r ? r.c : 0, G.coins)
-    };
-    save();
+    G.stars = starsFor();
+    if (G.stage) {
+      var id = G.stage.id, r = G.prog[id];
+      G.newBest = !r || G.time < r.t;
+      G.prog[id] = {
+        s: Math.max(r ? r.s : 0, G.stars),
+        t: r ? Math.min(r.t, G.time) : G.time
+      };
+      save();
+    }
     A.sfx('win');
     A.drive(0, 0, 0, false);
   }
 
+  /* Out of hearts. The run stops where it is and offers the two ways on:
+     back to the lesson, or another run. */
   function gameOver(why) {
     if (G.state !== 'play') return;
     G.state = 'over';
     G.reason = why;
-    G.bank += G.coins;
-    if (G.mode === 'endless' && G.dist > G.best) { G.best = G.dist; G.newBest = true; }
     save();
-    A.sfx(why === 'fuel' ? 'over' : 'crash');
+    A.sfx('over');
     A.drive(0, 0, 0, false);
-    R.shake = why === 'fuel' ? 0 : 16;
+    R.shake = 0;
   }
 
   /* Put the car back on its wheels at `x` and give it a moment of immunity. */
-  function respawnAt(x, fuel) {
+  function respawnAt(x) {
     G.gap = null;                      // a chasm re-arms itself on the next approach
     G.v.reset(Math.max(120, x));
     G.v.crashed = false; G.v.crashReason = ''; G.v.upsideTime = 0;
     G.v.headLean = 0;
     G.invuln = 1.4;
-    G.fuel = Math.max(G.fuel, fuel);
     lastSafeX = G.v.x; lastSafeT = 0;
     R.shake = 10;
     updateCamera(0, true);
   }
 
-  /* Respawn instead of dying, if a heart was collected. */
-  function useSafety() {
-    G.safety--;
-    respawnAt(lastSafeX - 70, 22);
-    FX.text(G.v.x, G.v.y - 90, 'SAVED!', '#EF5350', true);
-    A.sfx('gem');
-  }
-
-  /* A crash in a stage costs a life and sends you back to the last checkpoint;
-     out of lives ends the run. Endless has one life, as it always did. */
-  function crashOut(why) {
-    if (G.mode !== 'stage' || G.lives <= 1) { gameOver(why); return; }
-    G.lives--;
+  /* A crash on the road costs nothing but the drive back: the truck is set
+     on its wheels on the last safe ground. Driving is the way between
+     questions, not a test of its own. */
+  function crashOut() {
     A.sfx('crash');
     R.shake = 14;
-    respawnAt(G.cpIdx >= 0 ? G.cpX : 160, 30);
-    FX.text(G.v.x, G.v.y - 96, G.lives + ' LEFT', '#EF5350', true);
-  }
-
-  /* ------------------------------------------------------------ pickups */
-  var seg = {};
-  function pickDist(p, v) {
-    /* distance from the pickup to the axle-to-axle segment, so the whole car
-       collects rather than just a circle around its centre */
-    var ax = v.x + V.axleRear.x * v.ca - V.axleRear.y * v.sa;
-    var ay = v.y + V.axleRear.x * v.sa + V.axleRear.y * v.ca;
-    var bx = v.x + V.axleFront.x * v.ca - V.axleFront.y * v.sa;
-    var by = v.y + V.axleFront.x * v.sa + V.axleFront.y * v.ca;
-    var dx = bx - ax, dy = by - ay;
-    var t = CG.clamp(((p.x - ax) * dx + (p.y - ay) * dy) / (dx * dx + dy * dy), 0, 1);
-    var qx = ax + dx * t - p.x, qy = ay + dy * t - p.y;
-    return Math.sqrt(qx * qx + qy * qy);
-  }
-
-  function collect(v) {
-    var wl = v.x - 260, wr = v.x + 260;
-    CG.World.each(wl, wr, function (ch) {
-      for (var i = 0; i < ch.picks.length; i++) {
-        var p = ch.picks[i];
-        if (CG.World.isTaken(p.id)) continue;
-        if (p.x < wl || p.x > wr) continue;
-        if (pickDist(p, v) > p.r + 40) continue;
-        CG.World.take(p.id);
-        switch (p.type) {
-          case 'coin':
-            G.coins++; A.sfx('coin');
-            FX.spawn('dust', p.x, p.y, 0, -40, 20, 0.32, 2, true);
-            break;
-          case 'fuel':
-            G.fuel = Math.min(FUEL_MAX, G.fuel + FUEL_CAN);
-            A.sfx('fuel'); FX.text(p.x, p.y - 40, '+FUEL', '#AED581');
-            break;
-          case 'gem':
-            G.coins += 25; A.sfx('gem'); FX.text(p.x, p.y - 40, '+25', '#4FC3F7');
-            break;
-          case 'boost':
-            G.boostT = 2.4; A.sfx('boost'); FX.text(p.x, p.y - 40, 'BOOST!', '#FFD54F', true);
-            break;
-          case 'heart':
-            G.safety++; A.sfx('gem'); FX.text(p.x, p.y - 40, '+1 SAVE', '#EF5350');
-            break;
-          case 'star':
-            G.coins += 50; A.sfx('gem');
-            FX.text(p.x, p.y - 44, '+50', '#FFD54F', true);
-            break;
-        }
-      }
-    });
+    respawnAt(lastSafeX - 70);
+    FX.text(G.v.x, G.v.y - 96, 'TRY AGAIN!', '#4FC3F7', true);
   }
 
   /* -------------------------------------------------------------- update */
@@ -4771,8 +4869,10 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
                  over: the tumble plays, the screen fades, the car is reset
                  on the lip and the question comes back with that answer out
        done      across: the grid fades away and the plank stays for good
-     A wrong answer costs time, never a life: the lesson is the reset, and
-     a child who runs out of lives on arithmetic stops playing.             */
+     A wrong answer costs a heart (see LIVES): the board falling or the
+     truck going over says what was wrong, the heart says it counted, and
+     the question comes back with new numbers. The third lost heart ends
+     the run instead (loseRun).                                              */
   var PLACE_T = 0.6, FAIL_T = 1.05, FADE_T = 0.45;
 
   /* THE MACHINE'S RUN (phase spawn), from the moment the length is chosen:
@@ -4786,7 +4886,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      revolutions a second: it idles while it waits, and the motion-blurred
      sprite takes over above BLUR0. */
   var MACH = { UP: 0.38, UNIT_T: 0.2, FEED_MAX: 1.5, ACC: 0.2, SETTLE: 0.16,
-               IDLE: 0.6, FULL: 7, BLUR0: 2.2, BLUR1: 4.5, SINK_T: 0.42 };
+               IDLE: 0.6, FULL: 7, BLUR0: 2.2, BLUR1: 4.5, SINK_T: 0.42, RISE_T: 0.5 };
 
   function machineRun(q) {
     var f = R.machineFrame(q.g), p = q.plank, L = Math.hypot(p.x1 - p.x0, p.y1 - p.y0);
@@ -4828,10 +4928,13 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     return { x: front - r.L / 2, y: f.beltY - R.PLANK_T, ang: 0, len: r.L };
   }
 
-  function newMachine() {
-    var a = G.time * MACH.IDLE * CG.TAU;         // carry on from the idle spin (see drawMachines)
+  /* The machine lives under the road and comes up when the truck has
+     stopped (the reveal's first beat); `up` stands it there at once, for a
+     retry under the fade. */
+  function newMachine(up) {
+    var a = G.time * MACH.IDLE * CG.TAU;
     return { spin: MACH.IDLE, ang: a, cog: -a * 1.7, roll: a * 0.3, lever: 0, leverV: 0,
-             lamp: 0, sink: 0, jolt: 0, squash: 0, sqV: 0, dustT: 0 };
+             lamp: 0, sink: up ? 0 : 1, rising: false, jolt: 0, squash: 0, sqV: 0, dustT: 0 };
   }
 
   /* The machine's moving parts, every frame a gap is live. */
@@ -4854,9 +4957,27 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     m.squash += m.sqV * dt;
     m.lamp = CG.approach(m.lamp, cutting ? 1 : 0, 10, dt);
     m.jolt = CG.approach(m.jolt, 0, 9, dt);
-    /* out of the road once the board is away - before the accelerator comes
-       back, so the truck never drives through it. On a retry it is stood
-       back up under the fade (resetGap). */
+    /* UP out of the road once the truck has stopped: the first thing the
+       stop brings, hydraulics hissing, grass and dust off its feet, and a
+       clank as it seats. */
+    if (ph === 'ask' && q.reveal >= REVEAL.mach && m.sink > 0) {
+      if (!m.rising) {
+        m.rising = true;
+        A.sfx('sink', { gain: 0.8 });
+        FX.poof(f.left + 30, q.g.ay, 90); FX.poof(f.right - 30, q.g.ay, 90);
+      }
+      m.sink = Math.max(0, m.sink - dt / MACH.RISE_T);
+      m.jolt = Math.max(m.jolt, 1.6);
+      m.dustT -= dt;
+      if (m.dustT <= 0) {
+        m.dustT = 0.05;
+        FX.dust(CG.lerp(f.left, f.right, Math.random()), q.g.ay, (Math.random() - 0.5) * 120, -40, 0.7);
+      }
+      if (m.sink === 0) { A.sfx('bump', { gain: 0.8 }); m.sqV -= 2.2; m.jolt = 3; }
+    }
+    /* and DOWN once the board is away - before the accelerator comes back,
+       so the truck never drives through it. On a retry it is stood back up
+       under the fade (resetGap). */
     var down = ph === 'drive' || ph === 'fail' || ph === 'done' || (ph === 'place' && t > PLACE_T * 0.3);
     if (down && m.sink < 1) {
       if (m.sink === 0) {
@@ -4875,18 +4996,33 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 
   /* THE STOP, AND THE REVEAL AFTER IT.
 
-     GRAB_T is how long the driver stands on a locked brake when the drop
-     comes into view — the tyre model turns that into a screech, smoke and a
-     nose-dive on its own, so the stop is a moment rather than a slow roll.
+     The stop is ONE braking action. The moment the truck is within braking
+     distance of its hold the driver stands on the brake and keeps it there:
+     the speed it may still have with `rem` to go is what STOP_DECEL can
+     stop from (v = sqrt(2 a rem)), and the tyres are held to that line -
+     the tyre model gives the screech, the smoke and the nose-dive, the
+     scripted part only makes sure it stands exactly on the mark instead of
+     rolling the last metres or meeting the barrier. Dust pours off both
+     tyres the whole way and bursts as it stands.
 
      Then the question is built in front of the player one piece at a time,
-     seconds from the instant the car comes to rest: pane, axes, the near
-     point, the far point, the question, the ruler. Everything arriving at
-     once buried the stop it was supposed to be the answer to. A retry skips
-     the build (resetGap winds `reveal` past the end) — the player has seen it. */
-  var GRAB_T = 0.5;
-  var REVEAL = { pane: 0.35, axes: 0.75, ptA: 1.05, ptB: 1.28, ask: 1.55, ruler: 1.8 };
-  var REVEAL_T = 0.3, REVEAL_DONE = 99;
+     each with its own cue, from the instant the truck stands:
+       mach   the plank machine rises out of the road ahead of it
+       ptA/B  the two points land on the lips, one after the other
+       pane   the coordinate plane is drawn in behind them, then its axes
+       lblA/B each point's coordinates light up beside it
+       ask    the question
+       ruler  the console and ruler, the first thing that can be touched
+     Everything arriving at once buried the stop it was supposed to be the
+     answer to; a beat that follows from the last is what makes it one
+     event. A retry starts again from the points (resetGap): the machine and
+     the plane are already there. */
+  var STOP_DECEL = 620;                                  // px/s^2: a hard stop, ~12 m/s^2
+  var REVEAL = { mach: 0.1, ptA: 0.75, ptB: 0.95, pane: 1.2, axes: 1.4, lblA: 1.7, lblB: 1.9, ask: 2.2, ruler: 2.5 };
+  var REVEAL_T = 0.3, HILITE_T = 0.9;
+
+  /* How far a truck at speed `sp` needs to stand on its mark. */
+  function brakeRoom(sp) { return sp * sp / (2 * STOP_DECEL) + 40; }
 
   function revealAt(q, t0) {
     return q.out * CG.clamp((q.reveal - t0) / REVEAL_T, 0, 1);
@@ -4911,25 +5047,48 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   function armGap(v) {
     if (G.gap) return;
     var g = nextChasm();
-    if (!g || v.x < g.armX || v.x > g.bx) return;
+    if (!g || v.x > g.bx) return;
+    /* the pedals go the moment the truck is within braking distance of its
+       hold - never earlier than armX, so a fast truck gets the whole run */
+    var sp = Math.max(0, v.forwardSpeed());
+    if (v.x < Math.max(g.armX, g.stopX - brakeRoom(sp))) return;
     G.gap = { g: g, phase: 'approach', t: 0, plank: null, len: 0, tries: 0,
-              wrong: {}, hint: false, fade: 0, tipped: false, pose0: null,
-              grid: 0, axes: 0, ptA: 0, ptB: 0, panel: 0, rulerIn: 0,
-              reveal: 0, out: 1, beat: 0, run: null, mach: newMachine(),
+              wrong: {}, fade: 0, tipped: false, pose0: null,
+              grid: 0, axes: 0, ptA: 0, ptB: 0, lblA: 0, lblB: 0, hiA: 0, hiB: 0, plane: 1,
+              panel: 0, rulerIn: 0, skidT: 0, retry: false, lost: false,
+              reveal: 0, out: 1, beat: 0, run: null, mach: newMachine(false),
               ruler: { open: 0, target: 0, cursor: 0, value: 0, keyT: 0, down: false } };
     replanHold(G.gap);
     /* The driver sees it and stands on the brake. The faster the arrival, the
-       bigger the moment: a screech, smoke off both tyres, a kick through the
-       camera. A car already crawling gets the screech and nothing else. */
-    var sp = Math.max(0, v.forwardSpeed());
-    A.sfx('brake');
+       bigger the moment: the screech and the gravel under it, smoke off both
+       tyres, a kick through the camera. A truck already crawling gets the
+       sound and little else. */
+    var lv = CG.clamp(sp / 700, 0.3, 1);
+    A.brakeGrab(lv);
     if (sp > 90) {
       R.shake = Math.max(R.shake, Math.min(11, 3 + sp * 0.022));
-      for (var k = 0; k < 8; k++) {
+      for (var k = 0; k < 10; k++) {
         var w = v.wheels[k & 1];
         var px = w.contact ? w.cpx : v.x, py = w.contact ? w.cpy : v.y + 30;
-        FX.dust(px, py, -sp * (0.2 + Math.random() * 0.15), -20 - Math.random() * 40,
-                0.8 + Math.random() * 0.5);
+        FX.dust(px, py, -sp * (0.2 + Math.random() * 0.2), -20 - Math.random() * 50,
+                0.9 + Math.random() * 0.6);
+      }
+    }
+  }
+
+  /* THE TRUCK STANDS: the brakes let go with a hiss, a thud through the
+     springs, dust bursting off both tyres and rolling on ahead of them with
+     the momentum the truck just lost, and a kick through the camera. */
+  function stopBurst(v, sp) {
+    var k = CG.clamp(sp / 500, 0.35, 1), i, w;
+    A.brakeStop(k);
+    R.shake = Math.max(R.shake, 4 + 6 * k);
+    for (i = 0; i < 2; i++) {
+      w = v.wheels[i];
+      var px = w.contact ? w.cpx : v.x + (i ? 60 : -60), py = w.contact ? w.cpy : v.y + 30;
+      FX.poof(px + 10, py + 2, 120 + 60 * k, 0.5);
+      for (var d = 0; d < 5; d++) {
+        FX.dust(px, py, 60 + 180 * k * Math.random(), -30 - Math.random() * 50, 0.8 + 0.6 * k);
       }
     }
   }
@@ -4946,23 +5105,48 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 
   /* Per-frame control of the sequence. Returns an input override for the
      physics, or null when the player has the pedals. */
+  /* The speed the truck may still have with `rem` px to its mark: the hard
+     stop's own curve, bent down to a walk over the last few px so it stands
+     on the mark rather than at the barrier. */
+  function stopSpeed(rem) {
+    return Math.min(Math.sqrt(2 * STOP_DECEL * Math.max(0, rem)), rem * 4 + 16);
+  }
+
   function gapControl(dt) {
     var q = G.gap, g = q.g, v = G.v;
     q.t += dt;
-    /* nothing of the question exists until the car has stopped */
-    if (q.phase !== 'approach') q.reveal += dt;
+    /* nothing of the question exists until the car has stopped - and, the
+       first time, until the road has been explained and the lesson had */
+    if (q.phase !== 'approach' && q.phase !== 'intro' && q.phase !== 'lesson') q.reveal += dt;
     q.out = CG.approach(q.out, q.phase === 'done' ? 0 : 1, 2.4, dt);
-    q.grid = revealAt(q, REVEAL.pane);
-    q.axes = revealAt(q, REVEAL.axes);
+    /* THE PLANE GOES WITH THE ANSWER: the moment GO is pressed the sheet,
+       the rules and the axes fade, and only the two points stay - so the
+       board being cut, swung across and fitted between them is the whole
+       picture. It comes back with the question after a miss. */
+    var asking = q.phase === 'ask' || q.phase === 'approach' || q.phase === 'intro' || q.phase === 'lesson';
+    q.plane = CG.approach(q.plane, asking ? 1 : 0, asking ? 6 : 3.4, dt);
+    var up = q.retry ? q.out : 0;                          // a retry's plane is already up
+    q.grid = Math.max(up, revealAt(q, REVEAL.pane)) * q.plane;
+    q.axes = Math.max(up, revealAt(q, REVEAL.axes)) * q.plane;
     q.ptA = revealAt(q, REVEAL.ptA);
     q.ptB = revealAt(q, REVEAL.ptB);
+    q.lblA = revealAt(q, REVEAL.lblA);
+    q.lblB = revealAt(q, REVEAL.lblB);
+    /* each label lights up as it lands and the light dies over HILITE_T */
+    q.hiA = q.reveal > REVEAL.lblA ? CG.clamp(1 - (q.reveal - REVEAL.lblA) / HILITE_T, 0, 1) * q.out : 0;
+    q.hiB = q.reveal > REVEAL.lblB ? CG.clamp(1 - (q.reveal - REVEAL.lblB) / HILITE_T, 0, 1) * q.out : 0;
     q.panel = revealAt(q, REVEAL.ask);
     q.rulerIn = revealAt(q, REVEAL.ruler);
-    /* one cue per piece as it lands, so the build is heard as well as seen */
-    if (q.phase !== 'approach' && q.out > 0.5) {
-      if (q.beat === 0 && q.reveal >= REVEAL.pane) { q.beat = 1; A.sfx('check'); }
-      else if (q.beat === 1 && q.reveal >= REVEAL.ptA) { q.beat = 2; A.sfx('click'); }
-      else if (q.beat === 2 && q.reveal >= REVEAL.ptB) { q.beat = 3; A.sfx('click'); }
+    if (q.phase === 'intro') introControl(q, dt);   // the three lines light the pieces themselves
+    /* one cue per piece as it lands, so the build is heard as well as seen
+       (the machine has its own, in stepMachine) */
+    if (q.phase === 'ask' && q.out > 0.5) {
+      if (q.beat === 0 && q.reveal >= REVEAL.ptA) { q.beat = 1; A.sfx('click'); }
+      else if (q.beat === 1 && q.reveal >= REVEAL.ptB) { q.beat = 2; A.sfx('click'); }
+      else if (q.beat === 2 && q.reveal >= REVEAL.lblA) { q.beat = 3; A.sfx('click', { rate: 1.32 }); }
+      else if (q.beat === 3 && q.reveal >= REVEAL.lblB) { q.beat = 4; A.sfx('click', { rate: 1.32 }); }
+      else if (q.beat === 4 && q.reveal >= REVEAL.ask) { q.beat = 5; A.sfx('check'); }
+      else if (q.beat === 5 && q.reveal >= REVEAL.ruler) { q.beat = 6; A.sfx('click', { rate: 0.8 }); }
     }
     q.ruler.open = CG.approach(q.ruler.open, q.ruler.target, 10, dt);
     if (q.ruler.keyT > 0) q.ruler.keyT -= dt;
@@ -4970,13 +5154,12 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     stepMachine(q, dt);
     switch (q.phase) {
       case 'approach': {
-        /* The brake goes in hard first (GRAB_T of full lock — the skid, the
-           smoke and the nose-dive all fall out of the tyre model), then a
-           speed target that shrinks with the distance left walks the car the
-           last few metres to the lip rather than slamming a wall. A fast
-           arrival still meets the barrier in gapAfterStep, in a cloud of dust. */
+        /* ONE BRAKING ACTION (see STOP_DECEL): the brake is held while the
+           truck is above the stopping curve, and the curve is also enforced
+           directly in gapAfterStep, so the stop lands on the mark. A truck
+           arriving slower than the curve is walked up to it. */
         var rem = g.stopX - v.x, sp = v.forwardSpeed();
-        var want = CG.clamp(rem * 2.4, 0, 260);
+        var want = stopSpeed(rem);
         /* A truck that went over anyway (landed on its roof, or settled
            upside down) is set back on its wheels where it is: the question is
            never asked of a wreck, and a flip on the approach is not a crash
@@ -5002,16 +5185,26 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
           if (!settled && q.stillT < 1.2) return COAST;
           if (!settled) { v.reset(g.stopX); clearCrash(v); }
           holdCar(v);
-          q.phase = 'ask'; q.t = 0;
-          for (var d = 0; d < 4; d++) {
-            var w = v.wheels[d & 1];
-            if (w.contact) FX.dust(w.cpx, w.cpy, -30, -25, 0.6);
-          }
+          stopBurst(v, q.arriveV || 0);
+          /* the first chasm ever: the road is explained and the lesson had
+             before the question is asked (THE LESSON) */
+          if (lessonWanted()) introStart(q); else { q.phase = 'ask'; q.t = 0; }
           return COAST;
         }
-        if (q.t < GRAB_T && sp > 120) return HARD;
-        if (sp > want + 15 && sp > 20) return SLOWDOWN;
-        if (sp < want - 15) return CREEP;
+        /* dust off both tyres for as long as the brakes are on */
+        if (sp > want * 0.9 && sp > 60) {
+          q.arriveV = Math.max(q.arriveV || 0, sp);
+          q.skidT -= dt;
+          if (q.skidT <= 0) {
+            q.skidT = 0.035;
+            for (var d = 0; d < 2; d++) {
+              var w = v.wheels[d];
+              if (w.contact) FX.dust(w.cpx, w.cpy, -sp * 0.3, -30, 0.7 + sp / 900);
+            }
+          }
+        }
+        if (sp > want) return HARD;
+        if (sp < want - 40 && rem > 30) return CREEP;
         return COAST;
       }
       case 'spawn': {
@@ -5050,19 +5243,21 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
         }
         return COAST;
       }
+      case 'intro':                    // the road explained (introControl)
+      case 'lesson':                   // Swifty has the screen (lessonTick)
+        return COAST;
       case 'place':
         if (q.t >= PLACE_T) landPlank();
         return COAST;
       case 'drive': {
         /* the player has the pedals - on the leash until it is across (see
            Gaps.leash); an override only while it is actually holding back */
-        if (G.fuel <= 0) return null;
         var li = CG.Gaps.leash(v, g, G.input);
         return li === G.input ? null : li;
       }
       case 'fail':
         q.fade = CG.clamp((q.t - (FAIL_T - FADE_T)) / FADE_T, 0, 1);
-        if (q.t >= FAIL_T) resetGap();
+        if (q.t >= FAIL_T) { if (q.lost) loseRun(); else resetGap(); }
         return COAST;
       case 'done':
         if (q.out < 0.02) G.gap = null;
@@ -5071,12 +5266,71 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     return null;
   }
 
+  /* THE ROAD EXPLAINED - once, at the first chasm, before the lesson: three
+     lines, each with the thing it names lit. The broken road is outlined
+     and badged for the first; the two ends land (with the dashed span
+     between them) for the second; the plane comes up for the third. Each
+     holds for its `t` seconds or until a tap, then the lesson opens. */
+  var INTRO = [
+    { t: 3.8, text: 'Oops, the road is broken!' },
+    { t: 5.4, text: 'To cross this gap, we need to know the distance between its two ends.' },
+    { t: 4.4, text: 'Let’s explore how to find that on a coordinate plane!' }
+  ];
+  var INTRO_LEAD = 0.7, INTRO_IN = 0.35, INTRO_OUT = 0.3, INTRO_MIN = 0.9;
+
+  function introStart(q) {
+    q.phase = 'intro'; q.t = 0; q.step = 0; q.stepT = -INTRO_LEAD; q.said = false;
+    q.ringK = 0; q.roadK = 0;
+    loadLesson();                          // fetched under the three lines
+  }
+
+  /* a tap, a key, or the line's time: the next line - or the lesson */
+  function introAdvance() {
+    var q = G.gap;
+    if (!q || q.phase !== 'intro' || q.stepT < INTRO_MIN) return;
+    q.step++; q.stepT = 0;
+    if (q.step >= INTRO.length) {
+      q.phase = 'lesson'; q.t = 0;
+      showLesson(lessonOver);
+    } else A.sfx('click');
+  }
+
+  /* back from the lesson: the question, built from nothing as it always is
+     (the reveal starts under the overlay's fade, so the machine rises as
+     the road comes back into view) */
+  function lessonOver() {
+    var q = G.gap;
+    if (!q || q.phase !== 'lesson') return;
+    q.phase = 'ask'; q.t = 0; q.reveal = -0.5; q.beat = 0; q.stillT = 0;
+    q.ptA = q.ptB = q.lblA = q.lblB = q.hiA = q.hiB = q.grid = q.axes = q.panel = q.rulerIn = 0;
+    q.ringK = q.roadK = 0;
+  }
+
+  function introControl(q, dt) {
+    var s = q.step;
+    q.stepT += dt;
+    if (!q.said && q.stepT >= 0) { q.said = true; A.sfx('check'); }
+    if (q.stepT >= INTRO[s].t) { introAdvance(); if (q.phase !== 'intro') return; s = q.step; }
+    var pulse = 0.5 + 0.5 * Math.sin(G.clock * 4.5);
+    /* what each line points at: the hole, then the ends, then the plane */
+    var inA = s > 1 ? 1 : s === 1 ? CG.clamp(q.stepT / 0.45, 0, 1) : 0;
+    var inB = s > 1 ? 1 : s === 1 ? CG.clamp((q.stepT - 0.3) / 0.45, 0, 1) : 0;
+    var inP = s > 2 ? 1 : s === 2 ? CG.clamp(q.stepT / 0.7, 0, 1) : 0;
+    q.roadK = s === 0 ? CG.clamp((q.stepT + 0.3) / 0.4, 0, 1) : Math.max(0, 1 - q.stepT / 0.4);
+    q.ptA = inA; q.ptB = inB;
+    q.lblA = q.lblB = q.hiA = q.hiB = 0;
+    q.ringK = s === 1 ? Math.min(inA, inB) * (0.55 + 0.45 * pulse) : s > 1 ? 0.3 : 0;
+    q.grid = inP * (s === 2 ? 0.7 + 0.3 * pulse : 1);
+    q.axes = inP;
+    q.panel = q.rulerIn = 0;
+  }
+
   /* The player read a length off the ruler. */
   G.answer = function (len) {
     var q = G.gap;
     if (!q || q.phase !== 'ask') return;
     len = len | 0;
-    if (len < 1 || len > CG.Gaps.RULER_MAX || q.wrong[len]) return;
+    if (len < 1 || len > q.g.ruler || q.wrong[len]) return;
     q.len = len;
     q.ruler.value = len;                 // the number stays in the box...
     q.ruler.target = 0;                  // ...and the ruler folds: the machine takes it from here
@@ -5147,11 +5401,17 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     A.sfx('go');
   }
 
+  /* A wrong plank has done its work: the answer is crossed off, and a heart
+     goes with it. The last heart ends the run once the fade is down. */
   function failGap() {
     var q = G.gap;
     if (q.phase !== 'drive') return;
     q.phase = 'fail'; q.t = 0;
-    q.wrong[q.len] = true; q.tries++; q.hint = true;
+    q.wrong[q.len] = true; q.tries++;
+    G.lives = Math.max(0, G.lives - 1);
+    G.heartT = 0.9;
+    q.lost = G.lives <= 0;
+    A.sfx('heart');
     R.shake = Math.max(R.shake, 12);
   }
 
@@ -5198,7 +5458,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     CG.Terrain.setPlanks(CG.Terrain.planks.filter(function (p) { return p !== q.plank; }));
     q.plank = null; q.tipped = false; q.run = null; q.bad = null;
     q.ruler.value = 0; q.ruler.cursor = 0;
-    q.mach = newMachine();               // stood back up while the screen is black
+    q.mach = newMachine(true);           // stood back up while the screen is black
     /* a fresh question for the same hole, so nothing on the ruler is
        crossed out any more */
     newPoints(q);
@@ -5207,18 +5467,36 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     clearCrash(v);
     holdCar(v);
     /* back to the question: the plane is already up, the new points land on
-       it one after the other as the screen clears */
+       it one after the other as the screen clears, then their coordinates */
     q.phase = 'ask'; q.t = 0; q.fade = 1;
-    q.reveal = REVEAL.ptA; q.beat = 1;
+    q.retry = true;
+    q.reveal = REVEAL.ptA - 0.1; q.beat = 0;
+    /* this frame's alphas were read before the reset: nothing of the old
+       question may show (or be tapped) for the one frame until they are
+       read again */
+    q.ptA = q.ptB = q.lblA = q.lblB = q.hiA = q.hiB = q.panel = q.rulerIn = 0;
+  }
+
+  /* The third heart went with that plank. The truck is set back on the lip
+     under the fade and the run ends there, the question put away. */
+  function loseRun() {
+    var q = G.gap, g = q.g, v = G.v;
+    CG.Terrain.setPlanks(CG.Terrain.planks.filter(function (p) { return p !== q.plank; }));
+    v.reset(g.stopX);
+    clearCrash(v);
+    holdCar(v);
+    G.gap = null;
+    R.focus = 0;
+    updateCamera(0, true);
+    gameOver('hearts');
   }
 
   function solveGap() {
     var q = G.gap, g = q.g, v = G.v;
     g.solved = true;
-    var bonus = q.tries === 0 ? 30 : 10;
     if (q.tries === 0) G.firstTry++;
-    G.coins += bonus;
-    FX.text(v.x, v.y - 110, (q.tries === 0 ? 'FIRST TRY! +' : 'ACROSS! +') + bonus, '#FFD54F', true);
+    G.crossed++;
+    FX.text(v.x, v.y - 110, q.tries === 0 ? 'FIRST TRY!' : 'ACROSS!', '#FFD54F', true);
     A.sfx('gem');
     q.phase = 'done'; q.t = 0;
   }
@@ -5227,13 +5505,20 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   function gapAfterStep(dt) {
     var q = G.gap, g = q.g, v = G.v, p = q.plank, k;
     if (q.phase === 'approach') {
+      /* the stopping curve, held: whatever the tyres did not take off this
+         frame comes off along the chassis axis, capped at a little over
+         STOP_DECEL so it reads as the brakes and not as a wall */
+      var rem = g.stopX - v.x, fwd = v.forwardSpeed(), over = fwd - stopSpeed(rem);
+      if (over > 0 && v.onGround) {
+        var dv = Math.min(over, STOP_DECEL * 1.3 * dt);
+        v.vx -= dv * v.ca; v.vy -= dv * v.sa;
+      }
       if (v.x > g.stopX) {
         var sp = v.vx;
         v.x = g.stopX;
         if (sp > 260) {
-          A.sfx('thud'); A.sfx('bump'); R.shake = Math.max(R.shake, 6);
+          A.sfx('thud'); R.shake = Math.max(R.shake, 6);
           for (k = 0; k < 4; k++) FX.dust(v.wheels[1].cpx, v.wheels[1].cpy, sp * 0.3, 0, 1);
-          q.mach.jolt = Math.max(q.mach.jolt, 5); q.mach.sqV -= 1.5;   // the machine felt that
         }
         v.vx = Math.min(0, v.vx);
       }
@@ -5274,9 +5559,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 
   function stepPhysics(dt, live, force) {
     var v = G.v, i, w;
-    var fuelDead = G.fuel <= 0;
-    G.input.boost = G.boostT > 0;
-    var inp = force || (live && !fuelDead ? G.input : COAST);
+    var inp = force || (live ? G.input : COAST);
 
     acc += dt;
     var n = 0;
@@ -5328,19 +5611,19 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     if (G.track || G.mode === 'endless') armGap(v);
     if (G.gap) {
       force = gapControl(dt);
-      if (G.gap && G.gap.phase === 'ask') {
-        /* the world waits: no clock, no fuel, the engine idling */
+      if (G.gap && (G.gap.phase === 'ask' || G.gap.phase === 'intro' || G.gap.phase === 'lesson')) {
+        /* the world waits: the engine idling, the truck held */
         G.gap.fade = Math.max(0, G.gap.fade - dt / FADE_T);
         stepPhysics(dt, false);
         holdCar(v);
-        A.drive(0.05, 0, 0, G.fuel > 0);
+        A.drive(0.05, 0, 0, true);
         return;
       }
     }
     G.time += dt;
+    if (G.heartT > 0) G.heartT = Math.max(0, G.heartT - dt);
     if (G.freePlay) freePlayTick(v, dt);
 
-    if (G.boostT > 0) G.boostT = Math.max(0, G.boostT - dt);
     if (G.invuln > 0) G.invuln -= dt;
 
     var wasAir = v.airTime;
@@ -5359,36 +5642,12 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     }
     G.lastX = v.x;
 
-    /* fuel */
-    var eff = force || G.input;
-    var throttling = (eff.gas > 0 || eff.brake > 0) && G.fuel > 0;
-    if (!G.freePlay) G.fuel = Math.max(0, G.fuel - (throttling ? FUEL_DRIVE : FUEL_IDLE) * dt);
-    if (G.fuel <= 0) {
-      if (G.deadT === 0) FX.text(v.x, v.y - 100, 'OUT OF FUEL', '#EF5350', true);
-      G.deadT += dt;
-      var spd0 = Math.hypot(v.vx, v.vy);
-      if (G.deadT > 1.1 && spd0 < 45) gameOver('fuel');
-      else if (G.deadT > 8) gameOver('fuel');
-    }
-
-    /* distance + safe-ground memory for respawns */
+    /* distance (the season and the hour turn with it) */
     G.dist = Math.max(G.dist, v.x / CG.PPM);
     CG.Env.update(G.dist, dt);
 
-    /* checkpoints: a refuel, a respawn point and the only pacing beat the
-       player gets on a long stage */
-    if (G.track) {
-      var cps = G.track.cps;
-      while (G.cpIdx + 1 < cps.length && v.x >= cps[G.cpIdx + 1]) {
-        G.cpIdx++;
-        G.cpX = cps[G.cpIdx];
-        G.fuel = Math.min(FUEL_MAX, G.fuel + CP_FUEL);
-        FX.text(v.x, v.y - 104, 'CHECKPOINT', '#AED581', true);
-        A.sfx('check');
-      }
-      G.progress = CG.clamp(v.x / G.track.finishX, 0, 1);
-      if (v.x >= G.track.finishX) { finishStage(); return; }
-    }
+    var fin = G.track ? G.track.finishX : (G.mode === 'endless' ? CG.Endless.finishX : 0);
+    if (fin && v.x >= fin) { finishRun(); return; }
     if (v.onGround && Math.abs(v.a) < 0.5) {
       lastSafeT += dt;
       if (lastSafeT > 0.25) { lastSafeX = v.x; lastSafeT = 0; }
@@ -5407,10 +5666,10 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       }
     }
     brakeScreech(v, dt, force);
-    if (G.input.gas > 0 && G.fuel > 0 && smokeT <= 0) {
+    if (G.input.gas > 0 && smokeT <= 0) {
       var ex = v.toWorld(V.exhaust.x, V.exhaust.y);
       FX.smoke(ex.x, ex.y, v.vx - v.ca * 90, v.vy);
-      smokeT = G.boostT > 0 ? 0.035 : 0.075;
+      smokeT = 0.075;
     }
 
     /* landings */
@@ -5424,38 +5683,15 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       }
     }
 
-    /* trick rewards, banked on landing */
-    if (wasAir > 0.05 && v.airTime === 0) {
-      var spin = Math.abs(v.landedSpin || 0);
-      if (spin > 5.6) {
-        var flips = Math.floor(spin / (Math.PI * 2));
-        var bonus = 25 * Math.max(1, flips);
-        G.coins += bonus;
-        FX.text(v.x, v.y - 110, (flips > 1 ? flips + 'x FLIP! ' : 'FLIP! ') + '+' + bonus,
-                '#FFD54F', true);
-        A.sfx('flip');
-      } else if (wasAir > 1.05) {
-        G.coins += 12;
-        FX.text(v.x, v.y - 110, 'BIG AIR +12', '#4FC3F7', true);
-        A.sfx('flip');
-      }
-      v.landedSpin = 0;
-    }
-
-    collect(v);
+    if (wasAir > 0.05 && v.airTime === 0) v.landedSpin = 0;
 
     if (v.crashed) {
-      if (G.gap && G.gap.phase !== 'done') { /* handled by the chasm: a reset, not a life */ }
+      if (G.gap && G.gap.phase !== 'done') { /* handled by the chasm: a reset, not a heart */ }
       else if (G.invuln > 0) { v.crashed = false; v.crashReason = ''; v.upsideTime = 0; }
-      else if (G.freePlay) {                       // practice: back on the wheels, no cost
-        respawnAt(lastSafeX - 70, 0);
-        FX.text(G.v.x, G.v.y - 96, 'TRY AGAIN!', '#4FC3F7', true);
-      }
-      else if (G.safety > 0) useSafety();
-      else crashOut(v.crashReason);
+      else crashOut();
     }
 
-    A.drive(v.rpm, v.engineLoad, skid, G.fuel > 0);
+    A.drive(v.rpm, v.engineLoad, skid, true);
   }
 
   /* ------------------------------------------------------------- camera */
@@ -5479,14 +5715,14 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; }
   })();
 
-  /* How many lines sit under the question pill: the hint, and a line for
-     ruler tips while any of the three is still unretired (see drawGapUI).
+  /* How many lines sit under the question pill: one for the nudge while
+     any of its three steps is still to be done this run (see drawGapUI).
      Counted per question rather than per step, so the frame holds still
-     while the tips change under it. */
+     while the nudge changes under it. */
   function subLines(q) {
     if (!q) return 0;
     var anyTip = !G.learned.open || !G.learned.pick || !G.learned.drop;
-    return (q.hint ? 1 : 0) + (anyTip ? 1 : 0);
+    return anyTip ? 1 : 0;
   }
 
   function gapFrame(g, v, mode) {
@@ -5521,7 +5757,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var q = G.gap;
     /* the world's focus treatment: up while the question and its answer
        play out, eased back down as the truck drives on */
-    var fOn = q && (q.phase === 'ask' || q.phase === 'spawn' || q.phase === 'place' || q.phase === 'fail');
+    var fOn = q && (q.phase === 'ask' || q.phase === 'intro' || q.phase === 'spawn' || q.phase === 'place' || q.phase === 'fail');
     R.focus = snap ? (fOn ? 1 : 0) : CG.approach(R.focus, fOn ? 1 : 0, fOn ? 2.6 : 1.8, dt);
     if (q && q.phase !== 'done') {
       var g = q.g, f = gapFrame(g, v, q.phase === 'approach' ? 'wide'
@@ -5654,88 +5890,13 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     return m + ':' + (sec < 10 ? '0' : '') + (coarse ? sec : sec.toFixed(1));
   }
 
-  /* The route, drawn as one bar: where the checkpoints are, where the car is,
-     how much is left. It is the only place the stage objective is visible
-     while driving, so it stays readable at a glance and never moves. */
-  function progressRibbon() {
-    var c = R.ctx, W = R.W;
-    /* The top row is clock | ribbon | fuel. The ribbon gets whatever is left
-       between the other two, centred in THAT gap rather than on the screen —
-       and if the gap is too small to be worth reading (portrait), it drops to
-       its own row under the HUD instead of sliding under the fuel gauge. */
-    var freeL = 246, freeR = W - 292, free = freeR - freeL;
-    var narrow = free < 300;
-    var bw = narrow ? Math.min(W - 40, 520) : Math.min(520, free - 28);
-    var bx = narrow ? (W - bw) / 2 : freeL + (free - bw) / 2;
-    var by = narrow ? 196 : 30, bh = 14;
-    R.card(bx - 14, by - 15, bw + 28, bh + 30, 14);
-    /* The percentage reads as part of the bar, so it lives INSIDE the panel on
-       the bar's own centre line with its own reserved width. Hung under the
-       right-hand end it was a loose number on the scenery, and it pushed the
-       panel's only descender out past everything else in the top row. */
-    var lw = 48, barw = bw - lw;
-    R.roundRect(bx, by, barw, bh, bh / 2);
-    c.fillStyle = 'rgba(43,33,24,0.55)'; c.fill();
-    var k = CG.clamp(G.progress, 0, 1);
-    if (k > 0.004) {
-      R.roundRect(bx, by, Math.max(bh, barw * k), bh, bh / 2);
-      c.fillStyle = barGrad(by, bh, '#C6F26A', '#5DB12A'); c.fill();
-    }
-    /* checkpoint pips */
-    var cps = G.track.cps, i, f;
-    for (i = 0; i < cps.length; i++) {
-      f = CG.clamp(cps[i] / G.track.finishX, 0, 1);
-      c.beginPath();
-      c.arc(bx + barw * f, by + bh / 2, 6, 0, CG.TAU);
-      c.fillStyle = i <= G.cpIdx ? '#FFD54F' : '#ECEFF1';
-      c.fill();
-      c.lineWidth = 2; c.strokeStyle = '#2B2118'; c.stroke();
-    }
-    /* chasm pips: a diamond per question, gold once it is bridged */
-    var cs = G.track.chasms, g;
-    for (i = 0; i < cs.length; i++) {
-      g = cs[i];
-      f = CG.clamp(g.ax / G.track.finishX, 0, 1);
-      c.save();
-      c.translate(bx + barw * f, by + bh / 2);
-      c.rotate(Math.PI / 4);
-      c.fillStyle = g.solved ? '#FFD54F' : '#C2185B';
-      c.fillRect(-6, -6, 12, 12);
-      c.lineWidth = 2; c.strokeStyle = '#2B2118'; c.strokeRect(-6, -6, 12, 12);
-      c.restore();
-    }
-    /* the car */
-    c.beginPath();
-    c.arc(bx + barw * k, by + bh / 2, 9, 0, CG.TAU);
-    c.fillStyle = '#E53935'; c.fill();
-    c.lineWidth = 2.5; c.strokeStyle = '#2B2118'; c.stroke();
-    R.text(Math.round(k * 100) + '%', bx + bw, by + bh / 2, 17, '#FFFFFF', 'right', 0);
-    R.label(G.stage ? G.stage.name : '', bx, by - 5, 12, '#FFD86B');
-  }
-
-  /* The left-hand readouts are ONE card, not three.
-     Clock, coins and lives used to be a 214-wide panel, a 140-wide panel and a
-     row of hearts with no panel at all, so the corner had three different left
-     edges and three different right edges and the hearts floated over the
-     scenery. One card, one width, hair-line rules between the groups: the eye
-     lands on the clock and walks down instead of hunting three shapes. */
+  /* THE HUD IS THE HEARTS. Three of them, top left, on one small card - the
+     only readout the game has. They stay through the question (a heart is
+     lost there, and the loss must be seen where it is counted) and go only
+     under a menu. The one just lost swells, tips and greys out (G.heartT),
+     the empties stay as grey outlines so three is always the shape. */
   var HUD_X = 16, HUD_W = 214, HUD_PAD = 14;
-
-  function hudRule(y) {
-    var c = R.ctx;
-    c.save();
-    c.globalAlpha = 0.5;
-    c.fillStyle = 'rgba(236,239,241,0.22)';
-    c.fillRect(HUD_X + HUD_PAD, y, HUD_W - HUD_PAD * 2, 1);
-    c.restore();
-  }
-
-  /* Only what the moment needs. While a chasm has the player's attention
-     (from the auto-brake to the far lip) the stats and the fuel gauge fade
-     out: the world is waiting and none of it can change. The fuel gauge is
-     also absent through free play, when the tank does not drain - it arrives
-     with the first gap, as the run's one real constraint. */
-  var hudA = 1, fuelA = 0, nudgeA = 0;
+  var hudA = 1, nudgeA = 0;
   function focusOnGap() { return !!(G.gap && G.gap.phase !== 'done'); }
 
   /* THE NUDGE: a glow on the forward pedal when the game wants it pressed -
@@ -5763,113 +5924,81 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     return G.idleT >= IDLE_T ? 1 : 0;
   }
 
-  function drawHUD(dt) {
-    var c = R.ctx, W = R.W, i;
-    var stage = G.mode === 'stage' && G.track;
-    /* a menu (paused, results) is its own focus: the chip would only repeat
-       the results and the gauge would peek out from under the hanging sign */
-    var focus = focusOnGap() || (G.state !== 'play' && G.state !== 'paused');
-    hudA = CG.approach(hudA, focus ? 0 : 1, 6, dt || 0.016);
-    fuelA = CG.approach(fuelA, focus || G.freePlay ? 0 : 1, 4, dt || 0.016);
-    var nw = nudgeWanted();                          // eases in, lets go quickly
-    nudgeA = CG.approach(nudgeA, nw, nw > nudgeA ? 3 : 8, dt || 0.016);
-    /* Every heart that can still save the truck, and nothing else: a stage's
-       lives plus the saves picked up on the way (endless has no spare life,
-       so there it is the saves alone). Endless used to hide a single heart,
-       taking it for the run's own life - but it was a save, so spending one
-       of two made both vanish, and the hidden one still saved the next
-       crash. Each save now shows, and each crash takes exactly one. */
-    var hearts = (stage ? G.lives : 0) + G.safety;
-
+  /* A breathing halo round a control the game wants tapped - the pedal's
+     glow, lent to the ruler's buttons for the first gap's nudge. `k` 0..1. */
+  function glowRing(cx, cy, rad, k) {
+    var c = R.ctx, br = 0.5 + 0.5 * Math.sin(G.clock * 4.2);
+    var gr = rad * (1.3 + 0.16 * br);
     c.save();
-    c.globalAlpha = hudA;
-    if (hudA > 0.01 && stage) {
-      /* the card is sized to what it actually holds, so no empty ledge */
-      var hudH = 134 + (hearts > 0 ? 42 : 0);
-      R.card(HUD_X, 14, HUD_W, hudH, 18);
-      /* clock first — it is what the second star is scored on */
-      var over = G.stage && G.time > G.stage.par;
-      R.label('time', 30, 32, 11);
-      R.text(fmtTime(G.time), 30, 57, 30, over ? '#FFB4A8' : '#FFF', 'left', 0);
-      R.text('par ' + fmtTime(G.stage.par, true), 30, 83, 14, '#A9C3E6', 'left', 0);
-      R.text(Math.round(Math.hypot(G.v.vx, G.v.vy) / CG.PPM * 3.6) + ' km/h',
-             148, 83, 14, '#A9C3E6', 'left', 0);
-      if (!(G.gap && G.gap.phase === 'ask')) progressRibbon();
-      hudRule(96);
-      var ci = CG.img.coin;
-      if (ci) c.drawImage(ci, 0, 0, CG.SHEETS.coin.frame, CG.SHEETS.coin.frame, 30, 106, 28, 28);
-      R.text(String(G.coins), 66, 121, 24, '#FFD54F', 'left', 0);
-      if (hearts > 0) {
-        hudRule(140);
-        var hi = CG.img.heart;
-        var step = Math.min(28, (HUD_W - HUD_PAD * 2 - 26) / Math.max(1, hearts - 1));
-        for (i = 0; i < hearts && hi; i++) {
-          c.save();
-          c.globalAlpha = hudA * (i < G.lives ? 1 : 0.7);
-          c.drawImage(hi, 30 + i * step, 150, 26, 26);
-          c.restore();
-        }
-      }
-    } else if (hudA > 0.01) {
-      /* ENDLESS: one slim chip - how far, and what you have picked up. No
-         label (a number in metres says what it is), no speedometer, no
-         season caption; the best distance lives on the results screen. */
-      var hh = 48, hy = 16, hx = HUD_X, pad = 18;
-      var dist = Math.round(G.dist) + ' m', coins = String(G.coins);
-      c.font = R.font(26);
-      var dw = c.measureText(dist).width;
-      c.font = R.font(22);
-      var cw = c.measureText(coins).width;
-      var ic = 26, hs = 22, hn = '\u00d7' + hearts;
-      c.font = R.font(20);
-      var hw = hearts > 0 ? 22 + hs + 4 + c.measureText(hn).width : 0;
-      var w = pad + dw + 26 + ic + 8 + cw + hw + pad;
-      R.card(hx, hy, w, hh, hh / 2);
-      var mid = hy + hh / 2, x = hx + pad;
-      R.text(dist, x, mid + 1, 26, '#FFFFFF', 'left', 0);
-      x += dw + 13;
-      c.fillStyle = 'rgba(170,200,255,0.25)'; c.fillRect(x, mid - 12, 1.5, 24);
-      x += 13;
-      var ci2 = CG.img.coin;
-      if (ci2) c.drawImage(ci2, 0, 0, CG.SHEETS.coin.frame, CG.SHEETS.coin.frame, x, mid - ic / 2, ic, ic);
-      x += ic + 8;
-      R.text(coins, x, mid + 1, 22, '#FFD54F', 'left', 0);
-      x += cw;
-      if (hearts > 0) {
-        x += 11;
-        c.fillStyle = 'rgba(170,200,255,0.25)'; c.fillRect(x, mid - 12, 1.5, 24);
-        x += 11;
-        var hi2 = CG.img.heart;
-        if (hi2) c.drawImage(hi2, x, mid - hs / 2, hs, hs);
-        R.text(hn, x + hs + 4, mid + 1, 20, '#FFB4B4', 'left', 0);
-      }
-    }
+    var hg = c.createRadialGradient(cx, cy, rad * 0.8, cx, cy, gr + rad * 0.4);
+    hg.addColorStop(0, 'rgba(255,214,90,' + (k * (0.45 + 0.3 * br)).toFixed(3) + ')');
+    hg.addColorStop(1, 'rgba(255,214,90,0)');
+    c.fillStyle = hg;
+    c.beginPath(); c.arc(cx, cy, gr + rad * 0.4, 0, CG.TAU); c.fill();
+    c.beginPath(); c.arc(cx, cy, rad + 5 + 3 * br, 0, CG.TAU);
+    c.lineWidth = 3; c.strokeStyle = 'rgba(255,240,170,' + (k * (0.55 + 0.35 * br)).toFixed(3) + ')';
+    c.stroke();
     c.restore();
-
-    /* fuel */
-    if (fuelA > 0.01) {
+  }
+  /* the same, round a box (the ruler) */
+  function glowBox(x, y, w, h, r, k) {
+    var c = R.ctx, br = 0.5 + 0.5 * Math.sin(G.clock * 4.2), pad = 5 + 4 * br;
+    c.save();
+    c.shadowColor = 'rgba(255,214,90,' + (k * (0.7 + 0.3 * br)).toFixed(3) + ')';
+    c.shadowBlur = 18 + 10 * br;
+    R.roundRect(x - pad, y - pad, w + pad * 2, h + pad * 2, r + pad);
+    c.lineWidth = 3; c.strokeStyle = 'rgba(255,240,170,' + (k * (0.6 + 0.35 * br)).toFixed(3) + ')';
+    c.stroke();
+    c.restore();
+  }
+  function drawHearts() {
+    var c = R.ctx, hi = CG.img.heart, i;
+    var n = LIVES, hs = 30, step = 36, pad = 14;
+    var w = pad * 2 + hs + step * (n - 1), h = hs + 20, x0 = HUD_X, y0 = 14;
+    R.card(x0, y0, w, h, h / 2);
+    for (i = 0; i < n; i++) {
+      var cx = x0 + pad + hs / 2 + i * step, cy = y0 + h / 2, full = i < G.lives;
+      var lost = i === G.lives && G.heartT > 0;                 // the one just lost
+      var k = lost ? G.heartT / 0.9 : 0;                        // 1 -> 0 as the pop plays
       c.save();
-      c.globalAlpha = fuelA;
-      var fw = 200, fx = W - 162 - fw, fy = 28;          // just left of the two buttons
-      R.card(fx - 42, fy - 8, fw + 54, 40, 16);
-      var fi = CG.img.fuel;
-      if (fi) c.drawImage(fi, fx - 36, fy - 4, 28, 30);
-      var k = G.fuel / FUEL_MAX;
-      R.roundRect(fx, fy + 2, fw, 20, 10);
-      c.fillStyle = 'rgba(5,9,20,0.6)'; c.fill();
-      var col = k > 0.45 ? ['#C6F26A', '#5DB12A'] : k > 0.2 ? ['#FFE07A', '#FF9A12'] : ['#FF9C7A', '#E0301E'];
-      if (k < 0.2 && Math.sin(G.time * 12) < 0) col = ['#FFE3DC', '#FFB4A8'];
-      if (k > 0.005) {
-        R.roundRect(fx + 2, fy + 4, Math.max(6, (fw - 4) * k), 16, 8);
-        c.fillStyle = barGrad(fy + 4, 16, col[0], col[1]); c.fill();
-        c.fillStyle = 'rgba(255,255,255,0.35)';
-        R.roundRect(fx + 8, fy + 6, Math.max(0, (fw - 4) * k - 14), 4, 2); c.fill();
+      c.translate(cx, cy);
+      if (lost) {
+        var pop = 1 + 0.55 * Math.sin(Math.min(1, (1 - k) * 2.2) * Math.PI);
+        c.scale(pop, pop); c.rotate((1 - k) * 0.5);
+        c.translate(0, (1 - k) * (1 - k) * 18);
+      }
+      if (!full && !lost) {
+        c.globalAlpha = 0.28 * hudA;
+        if (hi) c.drawImage(hi, -hs / 2, -hs / 2, hs, hs);
+        c.globalAlpha = 0.5 * hudA;
+        c.beginPath(); c.moveTo(-hs * 0.3, -hs * 0.3); c.lineTo(hs * 0.3, hs * 0.3);
+        c.moveTo(hs * 0.3, -hs * 0.3); c.lineTo(-hs * 0.3, hs * 0.3);
+        c.lineWidth = 2.5; c.lineCap = 'round'; c.strokeStyle = '#FFB4B4'; c.stroke();
+      } else {
+        c.globalAlpha = hudA * (lost ? Math.min(1, k * 1.6) : 1);
+        if (hi) c.drawImage(hi, -hs / 2, -hs / 2, hs, hs);
       }
       c.restore();
     }
+  }
 
-    /* No pause or sound button up here any more: the corner belongs to the
-       road. Pause is P / Esc (or leaving the tab) and the forward pedal is how
+  function drawHUD(dt) {
+    var c = R.ctx, W = R.W;
+    /* a menu (results) is its own focus: the hearts would only repeat it */
+    var menu = G.state !== 'play' && G.state !== 'paused';
+    hudA = CG.approach(hudA, menu ? 0 : 1, 6, dt || 0.016);
+    var nw = nudgeWanted();                          // eases in, lets go quickly
+    nudgeA = CG.approach(nudgeA, nw, nw > nudgeA ? 3 : 8, dt || 0.016);
+
+    if (hudA > 0.01) {
+      c.save();
+      c.globalAlpha = hudA;
+      drawHearts();
+      c.restore();
+    }
+
+    /* No pause or sound button up here: the corner belongs to the road.
+       Pause is P / Esc (or leaving the tab) and the forward pedal is how
        you carry on; sound is M, and the title screen keeps its speaker. */
 
     /* pedals — while driving, and while paused: a pause has no menu, just the
@@ -5880,23 +6009,13 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       if (!held) pedal(104, py, pr, -1, G.input.brake > 0);
       pedal(W - 104, py, pr, 1, G.input.gas > 0, nudgeA);
     }
-
-    /* boost flash */
-    if (G.boostT > 0) {
-      c.save();
-      c.globalAlpha = 0.16 + 0.1 * Math.sin(G.time * 22);
-      var g = c.createLinearGradient(0, 0, R.W, 0);
-      g.addColorStop(0, '#FFD54F'); g.addColorStop(0.5, 'rgba(255,213,79,0)');
-      g.addColorStop(1, '#FFD54F');
-      c.fillStyle = g; c.fillRect(0, 0, R.W, R.H);
-      c.restore();
-    }
   }
 
   /* ------------------------------------------------------------ the ruler
      The answer is measured, not picked from a list. Beside the jeep sits a
      value box and an arrow. The arrow stretches a ruler up out of the box,
-     one unit per mark, RULER_MAX marks; the player taps the number the plank
+     one unit per mark, as many marks as the gap's ruler has (CG.Gaps.RULER,
+     or RULER_MAX once the big triples arrive); the player taps the number the plank
      needs, the ruler folds back with that number in the box, and the plank
      machine cuts it. Lengths already tried and failed are crossed out.
      Screen-space: the ruler is a tool the player holds, not a thing in the
@@ -5949,7 +6068,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   }
 
   function drawRuler(q) {
-    var c = R.ctx, ru = q.ruler, N = CG.Gaps.RULER_MAX, i;
+    var c = R.ctx, ru = q.ruler, N = q.g.ruler, i;
     var a = rulerAnchor(), box = RULER_BOX;
     var vx = a.x, gx = a.x + box + 10, top = a.y - box / 2;      // display, go button
     R.avoid = { l: vx - CON_PAD - 4, r: gx + box + CON_PAD + 4, t: top - CON_PAD - 4, b: top + box + CON_PAD + CON_BASE + 8 };
@@ -6104,17 +6223,111 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     c.restore();
     c.restore();
     if (q.phase === 'ask') btn('rulopen', gx - 4, top - 4, box + 8, box + 8, 6);
+    /* the nudge's light on the control the tip names - just the glow, no
+       arrow: the tip says what to do, the light says where */
+    if (q.tipStep && q.phase === 'ask') {
+      var nk = q.rulerIn;
+      if (q.tipStep === 'pick' && h > 2) glowBox(rx, ry, RULER_W, full, 12, nk);
+      else if (q.tipStep !== 'pick') glowRing(bcx, bcy, brr, nk);
+    }
+  }
+
+  /* THE ROAD EXPLAINED, in the world: the hole outlined in marching hazard
+     dashes with a warning badge bobbing over it (the first line), then a
+     ring on each end as they land (the second) - see introControl. */
+  function drawIntroWorld(q) {
+    var g = q.g, c = R.ctx, z = R.cam.z, k = q.roadK || 0;
+    if (q.ringK > 0.01) {
+      glowRing(R.sx(g.ax), R.sy(g.ay), 24, q.ringK);
+      glowRing(R.sx(g.bx), R.sy(g.by), 24, q.ringK);
+    }
+    if (k <= 0.01) return;
+    var x0 = R.sx(g.ax) - 22 * z, x1 = R.sx(g.bx) + 22 * z;
+    var y0 = R.sy(Math.min(g.ay, g.by)) - 36 * z, y1 = R.sy(Math.max(g.ay, g.by)) + 120 * z;
+    var pulse = 0.5 + 0.5 * Math.sin(G.clock * 5);
+    c.save();
+    c.globalAlpha = k;
+    c.shadowColor = 'rgba(255,120,40,' + (0.5 + 0.4 * pulse).toFixed(3) + ')';
+    c.shadowBlur = 18 + 12 * pulse;
+    c.setLineDash([16, 10]); c.lineDashOffset = -G.clock * 60;
+    c.lineWidth = 4; c.strokeStyle = 'rgba(255,196,60,0.95)';
+    R.roundRect(x0, y0, x1 - x0, y1 - y0, 18); c.stroke();
+    c.setLineDash([]);
+    /* the badge over the hole */
+    var bx = (x0 + x1) / 2, by = y0 - 34 - 5 * Math.sin(G.clock * 3), s = 20;
+    c.shadowColor = 'rgba(0,0,0,0.35)'; c.shadowBlur = 12;
+    c.beginPath(); c.moveTo(bx, by - s); c.lineTo(bx + s * 1.05, by + s * 0.8); c.lineTo(bx - s * 1.05, by + s * 0.8); c.closePath();
+    c.fillStyle = '#FFC531'; c.fill();
+    c.lineWidth = 3; c.lineJoin = 'round'; c.strokeStyle = '#2A2A2A'; c.stroke();
+    c.shadowBlur = 0;
+    c.font = R.font(s * 1.2, true); c.fillStyle = '#2A2A2A'; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText('!', bx, by + s * 0.24);
+    c.restore();
+  }
+
+  function wrapText(c, str, maxW) {
+    var words = str.split(' '), lines = [], cur = '', i, t;
+    for (i = 0; i < words.length; i++) {
+      t = cur ? cur + ' ' + words[i] : words[i];
+      if (cur && c.measureText(t).width > maxW) { lines.push(cur); cur = words[i]; } else cur = t;
+    }
+    if (cur) lines.push(cur);
+    return lines;
+  }
+
+  /* The three lines, one at a time on a glass card at the top, each fading
+     in and out; three dots under it say where in the three we are. While
+     the lesson has the screen nothing is drawn - unless it never came up,
+     when the way on is offered instead. */
+  function drawIntroCard(q) {
+    var c = R.ctx, W = R.W, H = R.H, u = uiScale(), i;
+    if (q.phase === 'lesson') {
+      if (G.lesson.up) return;
+      dim(0.45);
+      var bottom = headline('THE LESSON DIDN’T OPEN', 'gold', null, null,
+                            'Check that the learn folder sits beside the game - or carry on to the question.', u);
+      bigButton('lessonskip', W / 2, Math.min(bottom + 90 * u, H - 80 * u), 300 * u, 80 * u,
+                'CONTINUE', 'green', 'iconRestart', 'On to the question');
+      return;
+    }
+    var s = q.step, b = INTRO[s];
+    var k = Math.min(CG.clamp(q.stepT / INTRO_IN, 0, 1), CG.clamp((b.t - q.stepT) / INTRO_OUT, 0, 1));
+    if (k <= 0.01) return;
+    k = k * k * (3 - 2 * k);
+    /* the plate (R.plate): the words sit in its cream, between the screws
+       and the bottom step; the side padding keeps them off the hazard tabs */
+    var fs = Math.round(CG.clamp(W * 0.028, 17, 24)), pad = 46, maxW = Math.min(W - 32, 680);
+    var P = R.PLATE, band = P.text.bottom - P.text.top;
+    c.save();
+    c.font = R.font(fs, false, R.CW);
+    var lines = wrapText(c, b.text, maxW - pad * 2), tw = 0;
+    for (i = 0; i < lines.length; i++) tw = Math.max(tw, c.measureText(lines[i]).width);
+    var lh = fs * 1.3, h = Math.max(fs * 4.1, (lines.length * lh + 26) / band), w = Math.max(tw + pad * 2, h * 1.6);
+    var x = W / 2 - w / 2, y = x > HUD_X + 150 ? 14 : 72;     // clear of the hearts
+    y += (1 - k) * -12;
+    c.globalAlpha = k;
+    R.plate(x, y, w, h);
+    var ty = y + h * (P.text.top + band / 2) - lines.length * lh / 2;
+    for (i = 0; i < lines.length; i++) {
+      R.text(lines[i], W / 2, ty + lh * (i + 0.5) + 1, fs, R.NAVY, 'center', 0, false, R.CW);
+    }
+    for (i = 0; i < INTRO.length; i++) {
+      c.beginPath(); c.arc(W / 2 + (i - 1) * 16, y + h + 10, 4, 0, CG.TAU);
+      c.fillStyle = i <= s ? '#FF9F1C' : 'rgba(255,255,255,0.5)'; c.fill();
+    }
+    c.restore();
   }
 
   function drawGapUI() {
     var q = G.gap, g = q.g, c = R.ctx, W = R.W, H = R.H;
+    if (q.phase === 'intro' || q.phase === 'lesson') { drawIntroCard(q); return; }
     R.avoid = null;                    // drawRuler sets it again if the ruler is up
     if (q.phase === 'ask' && q.panel > 0.01) {
-      var qq = g.q, gb = R.gridBox(g), ra = rulerAnchor();
+      var gb = R.gridBox(g), ra = rulerAnchor();
       c.save();
       c.globalAlpha = q.panel;
       /* The question sits on a frosted glass pill with a ruler icon, in the
-         strip between the HUD card and the fuel bar; where that strip is too
+         strip to the right of the hearts card; where that strip is too
          narrow (a phone) it drops below the buttons, beside the ruler. */
       var rulerRight = q.ruler.down ? 0 : ra.x + RULER_BOX / 2 + RULER_W / 2 + 16;   // a ruler opening down leaves the top free
       var bandL = Math.max(HUD_X + HUD_W + 14, rulerRight), bandR = W - 150, ty = 50, sh = 58;
@@ -6123,49 +6336,33 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       var tx = CG.clamp((gb.left + gb.right) / 2, bandL + pw / 2, Math.max(bandL + pw / 2, bandR - pw / 2));
       var drop = (1 - q.panel) * -30, py = ty + drop;
       R.glass(tx - pw / 2, py - sh / 2, pw, sh, sh / 2);
-      var ic = sh * 0.58, qs = Math.min(sh * 0.37, (pw - ic * 2.4 - 40) / 16.5);
+      /* said the way a friend beside you would, not set as a test question:
+         the task is to pick a length, and after a miss, to pick another */
+      var QUESTION = q.tries === 0 ? 'Let\u2019s pick the right length for the plank!'
+                                   : 'Let\u2019s try another length for the plank.';
+      var ic = sh * 0.58, qs = Math.min(sh * 0.37, (pw - ic * 2.4 - 40) / (QUESTION.length * 0.5));
       c.font = R.font(qs, false, R.CW);
-      var QUESTION = 'How long should the plank be?';
       var qw = c.measureText(QUESTION).width;
       var gx0 = tx - (qw + ic * 1.9) / 2;
       R.rulerIcon(gx0 + ic * 0.4, py, ic);
       R.flick(gx0 + ic * 0.72, py + ic * 0.38, ic * 0.5, 1, 0.6);
       R.text(QUESTION, gx0 + ic * 1.35, py + 1, qs, R.NAVY, 'left', 0, false, R.CW);
       R.flick(gx0 + ic * 1.35 + qw + ic * 0.08, py, ic * 0.62, 1);
-      if (q.tries > 0) {
-        var bt = 'Try ' + (q.tries + 1), bs = 13;
-        c.font = R.font(bs, false, R.CW);
-        var bw = c.measureText(bt).width + 22, bxp = tx + pw / 2 - bw / 2 - 18, byp = py + sh / 2;
-        R.roundRect(bxp - bw / 2, byp - 12, bw, 24, 12);
-        c.fillStyle = barGrad(byp - 12, 24, '#FFC04D', '#FF8A1F'); c.fill();
-        c.lineWidth = 1.5; c.strokeStyle = '#FFFFFF'; c.stroke();
-        R.text(bt, bxp, byp + 1, bs, '#FFFFFF', 'center', 0, false, R.CW);
-      }
-      /* Under the question, in reading order: the hint (after a miss), then
-         the ruler tip for a step the player has not yet done - what to work
-         out, then how to answer. The camera keeps the plane below them. */
+      /* NO HINT after a miss - no legs on the plane, no formula: the game
+         does not teach the distance formula, it sits inside the lesson that
+         does. A miss costs a heart and asks again with new numbers; the
+         only line under the question is the first gap's nudge. */
       var subY = py + sh / 2 + 26;
-      if (q.hint) {
-        var hs = Math.min(16, pw / 30), hy = subY;
-        subY += 44;
-        var X = R.X_COL, Y = R.Y_COL, Nv = R.NAVY;
-        var hp = qq.dy === 0
-          ? [['same height — just count across: ', Nv], [String(qq.dx), X]]
-          : [[String(qq.dx), X], [' across, ', Nv], [String(qq.dy), Y], [g.b[1] > g.a[1] ? ' up' : ' down', Nv],
-             ['   →   √(', Nv], [String(qq.dx), X], ['² + ', Nv], [String(qq.dy), Y], ['²)', Nv]];
-        c.font = R.font(hs, false, R.CW);
-        var hw = 0; hp.forEach(function (t) { hw += c.measureText(t[0]).width; });
-        var lw = hs * 3.4, cw = Math.min(W - 32, hw + lw + hs * 2.2), cx0 = CG.clamp(tx, cw / 2 + 16, W - cw / 2 - 16);
-        R.glass(cx0 - cw / 2, hy - hs * 1.2, cw, hs * 2.4, hs * 1.2);
-        R.text('Hint', cx0 - cw / 2 + hs * 1.1, hy + 1, hs, '#F08A00', 'left', 0, false, R.CW);
-        R.textRun(hp, cx0 + lw / 2, hy + 1, hs);
-      }
+      /* THE NUDGE (first gap only, see G.learned): one line on what to do
+         next, and the control it means lit and pointed at (drawRuler). It
+         speaks to the interaction - open, pick, cut - never to the maths. */
       var ru = q.ruler;
       var step = !ru.target ? 'open' : ru.cursor && !q.wrong[ru.cursor] ? 'drop' : 'pick';
       var tip = G.learned[step] ? '' : {
-        open: 'tap the red button to open the ruler',
-        pick: 'tap the number the plank needs',
-        drop: 'tap GO to cut the plank' }[step];
+        open: 'Tap the red button to open the ruler',
+        pick: 'Tap the number of units the plank needs',
+        drop: 'Tap GO to cut the plank' }[step];
+      q.tipStep = tip ? step : '';
       var tipY = subY;
       c.restore();
       /* the ruler is the last thing to arrive, and the first thing the player
@@ -6183,6 +6380,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
         c.restore();
       }
     } else if (q.plank && (q.phase === 'spawn' || q.phase === 'place' || (q.phase === 'drive' && q.ruler.open > 0.02))) {
+      q.tipStep = '';
       drawRuler(q);                    // folding away, the chosen number still in the box
     }
     if (q.fade > 0.005) {
@@ -6208,7 +6406,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   /* highlight a mark; the plank does not drop until the button confirms */
   G.rulerPick = function (k) {
     var q = G.gap;
-    if (!asking(q) || k < 1 || k > CG.Gaps.RULER_MAX || q.wrong[k]) return;
+    if (!asking(q) || k < 1 || k > q.g.ruler || q.wrong[k]) return;
     if (!q.ruler.target) q.ruler.target = 1;
     q.ruler.cursor = k;
     learn('open'); learn('pick');
@@ -6232,7 +6430,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var q = G.gap, ru;
     if (!asking(q)) return false;
     ru = q.ruler;
-    var N = CG.Gaps.RULER_MAX;
+    var N = q.g.ruler;
     if (k === 'Enter') { G.rulerButton(); return true; }
     if (k === 'ArrowUp' || k === 'ArrowDown') {
       /* the highlight moves the way the key points: up the ruler is bigger
@@ -6300,43 +6498,6 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      and scaled, so a phone gets the same composition, smaller. */
   function uiScale() {
     return CG.clamp(Math.min(R.W / 900, R.H / 720), 0.55, 1.3);
-  }
-
-  /* A row of stats on one glass card: [{label, value, icon, col}] */
-  function statStrip(cx, cy, w, h, cells, u) {
-    var c = R.ctx, n = cells.length, cw = w / n, i;
-    R.card(cx - w / 2, cy - h / 2, w, h, 16 * u);
-    for (i = 0; i < n; i++) {
-      var cl = cells[i], x0 = cx - w / 2 + i * cw;
-      if (i) {
-        c.fillStyle = 'rgba(170,200,255,0.22)';
-        c.fillRect(x0, cy - h * 0.3, 1.5, h * 0.6);
-      }
-      var ix = x0 + 22 * u, iy = cy, is = 15 * u;
-      if (cl.icon === 'coin' && CG.img.coin) {
-        c.drawImage(CG.img.coin, 0, 0, CG.SHEETS.coin.frame, CG.SHEETS.coin.frame, ix - is, iy - is, is * 2, is * 2);
-      } else if (cl.icon === 'crown') R.crown(ix, iy, is * 0.85);
-      else if (cl.icon === 'flag') {
-        c.save();
-        c.lineWidth = 3 * u; c.strokeStyle = '#E8EEF8'; c.lineCap = 'round';
-        c.beginPath(); c.moveTo(ix - is * 0.6, iy + is); c.lineTo(ix - is * 0.6, iy - is); c.stroke();
-        c.fillStyle = '#FF6A4A';
-        c.beginPath(); c.moveTo(ix - is * 0.6, iy - is); c.lineTo(ix + is, iy - is * 0.5);
-        c.lineTo(ix - is * 0.6, iy); c.closePath(); c.fill();
-        c.restore();
-      } else if (cl.icon === 'pin') {
-        c.save();
-        c.beginPath(); c.arc(ix, iy - is * 0.3, is * 0.62, Math.PI * 0.85, Math.PI * 2.15);
-        c.lineTo(ix, iy + is); c.closePath();
-        c.fillStyle = '#5FB4FF'; c.fill();
-        c.beginPath(); c.arc(ix, iy - is * 0.3, is * 0.25, 0, CG.TAU);
-        c.fillStyle = '#10182E'; c.fill();
-        c.restore();
-      }
-      var tx = ix + is + 10 * u;
-      R.label(cl.label, tx, cy - 11 * u, 10.5 * u, '#A9C3E6');
-      R.text(cl.value, tx, cy + 11 * u, 21 * u, cl.col || '#FFFFFF', 'left', 0);
-    }
   }
 
   function dim(alpha) {
@@ -6442,35 +6603,50 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     return cy + sh / 2;
   }
 
-  /* --------------------------------------------------------- stage clear */
+  /* -------------------------------------------------------------- the win
+     YOU DID IT: the sign comes down over the first second, while the truck
+     is still rolling to a stop under it, then the hearts held come up as
+     stars. A mission (endless) offers the same two ways on as running out
+     of hearts does; a stage keeps its map. */
+  var WIN_IN = 0.9;
   function drawWin() {
     var c = R.ctx, W = R.W, H = R.H, st = G.stage, u = uiScale();
+    var k = CG.clamp(G.winT / WIN_IN, 0, 1);
+    k = k * k * (3 - 2 * k);
+    c.save();
+    c.globalAlpha = k;
     dim(0.5);
-    var bottom = headline('STAGE CLEAR!', 'green', null, null, st.name, u);
+    var bottom = headline('YOU DID IT!', 'green', null, null,
+                          st ? st.name : 'Every gap crossed \u2014 mission complete!', u);
     var sy = bottom + 70 * u;
-    starRow(W / 2, sy, G.stars, 76 * u, G.winT);
+    starRow(W / 2, sy, G.stars, 76 * u, Math.max(0, G.winT - WIN_IN * 0.6));
 
-    /* results: label | value | what the star needed, on a fixed grid so a
-       long time or a four-digit coin count cannot collide */
+    /* one line of results: the planks, and how many fitted first time */
     var pw = Math.min(470 * u, W - 32), px = W / 2 - pw / 2, rh = 34 * u, ly = sy + 70 * u;
-    R.card(px, ly - 26 * u, pw, rh * 3 + 18 * u, 16 * u);
-    var lab = px + 24 * u, val = px + pw * 0.58, goal = px + pw - 20 * u, fs = 22 * u;
-    function row(y, name, v, good, need) {
-      R.label(name, lab, y, 12 * u);
-      R.text(v, val, y, fs, good ? '#C6F26A' : '#FFB4A8', 'right', 0);
-      R.text(need, goal, y, 13 * u, '#8FA6C6', 'right', 0);
-    }
-    row(ly, 'time', fmtTime(G.time), G.time <= st.par, 'par ' + fmtTime(st.par, true));
-    row(ly + rh, 'coins', String(G.coins), G.coins >= st.coins, 'goal ' + st.coins);
-    row(ly + rh * 2, 'gaps', G.firstTry + ' / ' + G.gapCount, G.firstTry === G.gapCount, 'first try');
-    var by = ly + rh * 3 + 20 * u;
-    if (G.newBest) R.badge('NEW BEST TIME!', W / 2, by + 14 * u, 17 * u, G.winT);
+    R.card(px, ly - 26 * u, pw, rh + 18 * u, 16 * u);
+    R.label('planks', px + 24 * u, ly, 12 * u);
+    R.text(G.firstTry + ' / ' + G.gapCount, px + pw * 0.58, ly, 22 * u,
+           G.firstTry === G.gapCount ? '#C6F26A' : '#FFFFFF', 'right', 0);
+    R.text('first try', px + pw - 20 * u, ly, 13 * u, '#8FA6C6', 'right', 0);
+    var by = ly + rh + 20 * u;
+    if (st && G.newBest) R.badge('NEW BEST TIME!', W / 2, by + 14 * u, 17 * u, G.winT);
 
-    var last = G.stageIdx >= CG.Stages.length - 1, bh = 76 * u, y2 = Math.min(by + 80 * u, H - 150 * u);
-    bigButton(last ? 'map' : 'next', W / 2 - 115 * u, y2, 250 * u, bh,
-              last ? 'MAP' : 'NEXT', 'green', 'iconPlay', last ? null : 'On to the next climb', true);
-    bigButton('retry', W / 2 + 125 * u, y2, 210 * u, bh, 'RETRY', 'orange', 'iconRestart', 'Chase 3 stars');
-    bigButton('map', W / 2, y2 + bh + 22 * u, 220 * u, 56 * u, 'STAGE MAP', 'blue', 'iconHome');
+    var bh = 76 * u, y2 = Math.min(by + 80 * u, H - 150 * u);
+    /* the buttons arrive with the sign, and are not tappable before they
+       can be seen: the gas finger is still on the screen at the line */
+    if (k < 0.5) { c.restore(); return; }
+    if (st) {
+      var last = G.stageIdx >= CG.Stages.length - 1;
+      bigButton(last ? 'map' : 'next', W / 2 - 115 * u, y2, 250 * u, bh,
+                last ? 'MAP' : 'NEXT', 'green', 'iconPlay', last ? null : 'On to the next climb', true);
+      bigButton('retry', W / 2 + 125 * u, y2, 210 * u, bh, 'RETRY', 'orange', 'iconRestart', 'Keep all three hearts');
+      bigButton('map', W / 2, y2 + bh + 22 * u, 220 * u, 56 * u, 'STAGE MAP', 'blue', 'iconHome');
+    } else {
+      bigButton('retry', W / 2, y2, 340 * u, bh, 'PLAY AGAIN', 'green', 'iconRestart', 'Another run at it', true);
+      bigButton('learn', W / 2, y2 + bh + 26 * u, 340 * u, bh, 'BACK TO THE LESSON', 'blue', 'iconHome',
+                'On to the next part');
+    }
+    c.restore();
   }
 
   /* PAUSED: no menu - the world just holds still under a light shade, and
@@ -6479,46 +6655,35 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     dim(0.22);
   }
 
-  /* what went wrong, said the way a friend would: [headline, strap] */
-  var REASON = {
-    head: ['ROOF LANDING!', 'Keep the rubber side down!'],
-    flipped: ['FLIPPED OVER!', 'Lean back on the big jumps!'],
-    fuel: ['OUT OF FUEL!', 'Your ride needs a refill!']
-  };
-
+  /* OUT OF HEARTS. The run is over, and there are exactly two ways on,
+     said plainly: back to the lesson the game sits inside, or another run
+     at the mission. Nothing to read but that - no score to compare, no
+     stats to weigh; the hearts were the whole account. */
   function drawOver() {
     var c = R.ctx, W = R.W, H = R.H, u = uiScale();
-    var why = REASON[G.reason] || ['CRASHED!', 'Shake it off and go again!'];
-    var stage = G.mode === 'stage' && G.track;
     dim(0.5);
-    var bottom = headline('WHOOPS!', 'gold', why[0], 'white',
-                          stage ? G.stage.name + '  \u00b7  stage failed' : why[1], u);
-    var y = bottom + 34 * u + 30 * u;
-    if (stage) {
-      R.label('route covered', W / 2, y - 26 * u, 13 * u, '#FFE7A8', 'center');
-      R.title(Math.round(G.progress * 100) + '%', W / 2, y + 16 * u, 64 * u, { grad: 'gold', wobble: 0 });
-    } else {
-      R.label('distance', W / 2, y - 26 * u, 13 * u, '#FFE7A8', 'center');
-      R.title(Math.round(G.dist) + ' m', W / 2, y + 16 * u, 64 * u, { grad: 'gold', wobble: 0 });
+    var bottom = headline('OUT OF HEARTS!', 'gold', null, null,
+                          'Three planks missed the mark. Take another look, or go again!', u);
+    var y = bottom + 60 * u;
+    /* the three, all grey: what ran out */
+    var hi = CG.img.heart, hs = 46 * u, i;
+    for (i = 0; i < LIVES; i++) {
+      c.save();
+      c.globalAlpha = 0.35;
+      if (hi) c.drawImage(hi, W / 2 + (i - 1) * hs * 1.3 - hs / 2, y - hs / 2, hs, hs);
+      c.restore();
     }
-    var yb = y + 70 * u;
-    if (!stage && G.newBest) R.badge('NEW BEST!', W / 2, yb, 18 * u, G.time);
+    if (G.crossed > 0) {
+      R.label(G.crossed + (G.crossed === 1 ? ' plank fitted' : ' planks fitted') + ' this run',
+              W / 2, y + hs * 0.9, 13 * u, '#FFE7A8', 'center');
+    }
 
-    var cells = stage
-      ? [{ label: 'coins earned', value: '+' + G.coins, icon: 'coin', col: '#FFD54F' },
-         { label: 'checkpoint', value: G.cpIdx >= 0 ? String(G.cpIdx + 1) : 'none', icon: 'flag' }]
-      : [{ label: 'coins earned', value: '+' + G.coins, icon: 'coin', col: '#FFD54F' },
-         { label: 'best', value: Math.round(G.best) + ' m', icon: 'crown' },
-         { label: 'season', value: String(CG.Env.season || '').toUpperCase(), icon: 'pin' }];
-    var sy = yb + (!stage && G.newBest ? 52 : 26) * u + 10 * u;
-    statStrip(W / 2, sy, Math.min(cells.length * 170 * u, W - 32), 60 * u, cells, u);
-
-    var ty = Math.min(sy + 100 * u, H - 180 * u), bh = 86 * u;
+    var ty = Math.min(y + hs + 80 * u, H - 190 * u), bh = 86 * u;
     R.sparks(W / 2, ty, 170 * u, 24 * u, G.time);
-    bigButton('retry', W / 2, ty, 340 * u, bh, 'TRY AGAIN', 'green', 'iconRestart',
-              'Hit the road and beat your best!', true);
-    bigButton(stage ? 'map' : 'home', W / 2, ty + bh + 26 * u, 250 * u, 66 * u,
-              stage ? 'STAGE MAP' : 'HOME', 'blue', 'iconHome', stage ? 'Pick another climb' : 'Back to main menu');
+    bigButton('learn', W / 2, ty, 340 * u, bh, 'BACK TO THE LESSON', 'blue', 'iconHome',
+              'Revisit the distance formula', true);
+    bigButton('retry', W / 2, ty + bh + 26 * u, 340 * u, bh, 'PLAY AGAIN', 'green', 'iconRestart',
+              'Three fresh hearts');
   }
 
   /* a wrong plank: the edges of the screen flush red for a moment */
@@ -6569,20 +6734,15 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
              plank: q.phase === 'spawn' && q.run && f ? { pose: feedPose(q, q.t), clipX: f.bladeX } : null };
   }
 
-  /* Every plank machine in view: the live gap's doing its work, every other
-     unsolved chasm's idling on its approach (a solved chasm's sank for good).
-     While a board is fed out, its count so far rides above it - the same
-     number the straps show, said out loud. */
+  /* The plank machine: only the live gap's, and only once the truck has
+     stopped and it has come up out of the road (stepMachine) - every other
+     chasm's waits underground, so the approach shows the hole and nothing
+     else. While a board is fed out, its count so far rides above it - the
+     same number the straps show, said out loud. */
   function drawMachines(src, q) {
-    if (!src || !src.chasms.length) return;
-    var i, g, a = G.time * MACH.IDLE * CG.TAU;
-    var idle = { sink: 0, ang: a, cog: -a * 1.7, roll: a * 0.3, blur: 0, lever: 0, lamp: 0, jolt: 0, squash: 0 };
-    for (i = 0; i < src.chasms.length; i++) {
-      g = src.chasms[i];
-      if (q && q.g === g) R.drawMachine(g, machineView(q));
-      else if (!g.solved) R.drawMachine(g, idle);
-    }
-    var f = q && q.run && q.phase === 'spawn' ? R.machineFrame(q.g) : null;
+    if (!src || !src.chasms.length || !q) return;
+    R.drawMachine(q.g, machineView(q));
+    var f = q.run && q.phase === 'spawn' ? R.machineFrame(q.g) : null;
     if (f && q.run.units > 0) {
       var p = feedPose(q, q.t), front = p.x + p.len / 2, z = R.cam.z;
       var lx = (Math.max(f.bladeX + f.bladeR, front - p.len) + front) / 2, n = q.run.units;
@@ -6608,10 +6768,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     R.drawTerrain();
     if (chasmSrc) R.drawChasmWalls(chasmSrc);
     R.drawProps(false);
-    if (G.track) R.drawFinish(G.track, G.time);
-    R.drawPickups(G.time);
+    R.drawFinish(G.track ? G.track.finishX : (G.mode === 'endless' ? CG.Endless.finishX : 0), G.time);
     R.drawFX(false);
-    R.legsUp = !!(q && q.hint && q.phase === 'ask');
+    R.legsUp = false;
     R.sheet = null;
     if (q) R.drawGrid(q.g, q.grid, q.axes);          // the plane, over the world
     drawMachines(chasmSrc, q);                        // on the plane, like the truck
@@ -6630,7 +6789,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
         R.drawPlank(pp, null);
       }
     }
-    if (q) R.drawGapPoints(q.g, q.ptA, q.hint && q.phase === 'ask', q.ptB);
+    if (q && q.phase === 'intro') drawIntroWorld(q);   // the broken road, marked
+    if (q) R.drawGapPoints(q.g, { a: q.ptA, b: q.ptB, la: q.lblA, lb: q.lblB, ha: q.hiA, hb: q.hiB,
+                                  span: q.plane });
     if (G.state === 'play' || G.state === 'paused') drawBlocker();
     R.drawVehicle(G.v, dt);
     if (q && q.bad) R.drawBadMark(q.bad);
@@ -6674,6 +6835,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var dt = last ? Math.min(0.05, (ts - last) / 1000) : 0.016;
     last = ts;
     G.clock += dt;                     // wall time, for what animates even while paused
+    lessonTick(dt);
     if (G.state === 'play') {
       updatePlay(dt);
       updateCamera(dt, false);
@@ -6738,6 +6900,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     switch (id) {
       case 'play': G.startEndless(); A.music(true); break;
       case 'retry': G.restart(); break;
+      case 'learn': G.toLearn(); break;
+      case 'lessonskip': lessonOver(); break;
       case 'next': G.startStage(G.stageIdx + 1); break;
       case 'map': G.toSelect(); break;
       case 'endless': G.startEndless(); break;
@@ -6757,7 +6921,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   function onDown(e) {
     A.init(); A.resume();
     var p = toLogical(e), i, b;
-    R.canvas.setPointerCapture && R.canvas.setPointerCapture(e.pointerId);
+    try { R.canvas.setPointerCapture && R.canvas.setPointerCapture(e.pointerId); } catch (err) {}   // a synthetic pointer has no capture
     /* UI first */
     for (i = buttons.length - 1; i >= 0; i--) {
       b = buttons[i];
@@ -6767,6 +6931,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     /* a pause has no menu: a touch carries on, and on the forward side it
        also drives - which is what the glowing pedal is asking for */
     if (G.state === 'paused') press('resume');
+    /* the road being explained: a tap moves it on */
+    if (G.state === 'play' && G.gap && G.gap.phase === 'intro') { introAdvance(); return; }
     if (G.state !== 'play') {
       /* a tap anywhere on the title screen starts a run */
       if (G.state === 'title') { pointers[e.pointerId] = 'play'; press('play'); }
@@ -6799,6 +6965,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     if (dn && G.state === 'play' && G.gap && G.gap.phase === 'ask' && G.rulerKey(k)) {
       e.preventDefault(); return;
     }
+    if (dn && G.state === 'play' && G.gap && G.gap.phase === 'intro' && (k === 'Enter' || k === ' ' || k === 'ArrowRight')) {
+      introAdvance(); e.preventDefault(); return;
+    }
     /* paused: forward carries on (and keeps driving while it is held) */
     if (dn && G.state === 'paused' && /^(ArrowRight|ArrowUp|[dDwW ])$/.test(k)) press('resume');
     if (k === 'ArrowRight' || k === 'd' || k === 'D') keys.right = dn;
@@ -6811,7 +6980,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     } else if (dn && (k === 'm' || k === 'M')) press('mute');
     else if (dn && (k === 'Enter') && G.state !== 'play') {
       if (G.state === 'title') press('play');
-      else if (G.state === 'win') press(G.stageIdx >= CG.Stages.length - 1 ? 'map' : 'next');
+      else if (G.state === 'win') press(!G.stage ? 'retry' : G.stageIdx >= CG.Stages.length - 1 ? 'map' : 'next');
       else if (G.state === 'select') press('s' + G.stageIdx);
       else press('retry');
     } else return;
@@ -6870,6 +7039,9 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var opts = urlOpts();
     showStats = !!opts.stats;
     if (opts.q) R.setQuality(+opts.q);
+    if (opts.learn) G.learnUrl = opts.learn;          // an external lesson instead of learn/
+    if (opts.lesson === '1') G.lesson.force = true;   // play the lesson again at the first chasm
+    else if (opts.lesson === '0') G.lesson.off = true;  // never open it (the tools)
     CG.loadAssets(
       function (p) { fill.style.width = Math.round(p * 100) + '%'; },
       function (failed) {

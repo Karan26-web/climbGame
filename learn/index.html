@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- Every stylesheet, script and icon below carries a version stamp,
+     and so does everything the scripts load. tools/stamp.js writes it
+     on each commit (.githooks/pre-commit), so a laptop that opened an
+     earlier copy asks for the new files rather than running the old
+     ones. The loading screen shows it, small, so two laptops can be
+     compared at a glance. (The <meta http-equiv> cache lines that used
+     to sit here are ignored by every current browser.) -->
+<title>Distance Formula — Swifty's Adventure</title>
+
+<!-- The game's own mark: two plotted points and the distance between
+     them, in the board's navy and gold. The SVG scales to whatever a
+     browser asks for; the PNGs are there for the ones that still want a
+     bitmap, and for an iOS home screen. -->
+<link rel="icon" type="image/svg+xml" href="assets/icon.svg?v=20260930120459">
+<!-- The two PNG icons stay PNG: iOS asks for a PNG home-screen icon, and
+     as WebP these two came out no smaller (3KB between them). -->
+<link rel="icon" type="image/png" sizes="32x32" href="assets/icon-32.png?v=20260930120459">
+<link rel="apple-touch-icon" sizes="180x180" href="assets/icon-180.png?v=20260930120459">
+<meta name="theme-color" content="#213258">
+<!-- The game's own two fonts, from its own folder — never the
+     laptop's, never the network's. -->
+<link rel="stylesheet" href="css/fonts.css?v=20260930120459">
+<link rel="stylesheet" href="css/style.css?v=20260930120459">
+<link rel="stylesheet" href="css/number-selector.css?v=20260930120459">
+<link rel="stylesheet" href="css/triangle-options.css?v=20260930120459">
+<link rel="stylesheet" href="css/hint-note.css?v=20260930120459">
+<link rel="stylesheet" href="css/screen-jump.css?v=20260930120459">
+<link rel="stylesheet" href="css/town.css?v=20260930120459">
+<link rel="stylesheet" href="css/speech-bubble.css?v=20260930120459">
+<link rel="stylesheet" href="css/formula-table.css?v=20260930120459">
+</head>
+<body>
+
+<div id="viewport">
+  <!-- 1920 x 1080 design space, scaled to fit any 16:9 screen -->
+  <div id="stage">
+
+    <!-- ============ start screen ============ -->
+    <div id="startScreen">
+      <img id="startArt" class="full" src="" alt="Distance Formula">
+
+      <!-- wind and blowing leaves; behind her and behind the button -->
+      <div id="startSky"></div>
+
+      <!-- She flies in and perches on the rock before Play is offered.
+           Her own rig rather than the game's: that one lives inside
+           #scene, which is still hidden while this plays. -->
+      <div id="startShadow"></div>
+      <div id="startBird" class="pre-flight">
+        <div id="startBirdWin">
+          <img id="startFly"  src="" alt="">
+          <img id="startTalk" src="" alt="Swifty">
+        </div>
+      </div>
+
+      <button id="playBtn" class="veiled" disabled aria-label="Play">
+        <img id="playImg" src="" alt="">
+      </button>
+
+      <!-- Where Play will be, until every file is here (js/preload.js):
+           the bar, how far it has got, and which copy of the game this is. -->
+      <div id="loadBar" role="progressbar" aria-label="Loading" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div class="load-track"><div id="loadFill"></div></div>
+        <div id="loadPct">0%</div>
+        <div id="loadVer"></div>
+      </div>
+    </div>
+
+    <!-- ============ game scene ============ -->
+    <div id="scene" class="hidden">
+      <img id="sceneArt" class="full" src="" alt="">
+
+      <div id="skyLayer"></div>
+
+      <!-- screen 5: the coordinate board. Axes, arrowheads and numbers
+           are drawn as an SVG overlay so each part can animate in. -->
+      <div id="gridPanel" class="hidden">
+        <div id="gridImg"></div>
+        <svg id="gridAxes" aria-hidden="true"></svg>
+      </div>
+
+      <!-- bird + bubble share this group so they bob together and
+           the tail never drifts off her head -->
+      <div id="charGroup">
+        <!-- she must not be seen standing at her mark before she flies
+             in, so both start hidden until an entrance runs -->
+        <div id="shadow" class="lifted"></div>
+        <div id="birdRig" class="pre-entrance">
+          <!-- mirrors her about the belly anchor so she faces the way
+               she is travelling -->
+          <div id="birdFlip">
+            <div id="birdWin">
+              <img id="flySheet"  src="" alt="">
+              <img id="talkSheet" src="" alt="Swifty">
+            </div>
+          </div>
+        </div>
+
+        <!-- screen 5 resting pose, swapped in when she lands -->
+        <img id="standSwifty" class="hidden" src="" alt="Swifty">
+
+        <!-- Her balloon (css/speech-bubble.css): HTML and CSS only.
+             #bubble is the box seatBubble() moves and sizes; inside it,
+             the balloon itself, its one shine, and the line. -->
+        <div id="bubble" class="hidden">
+          <div id="bubbleBody" class="game-speech-bubble" role="dialog" aria-live="polite">
+            <span class="game-speech-bubble__shine" aria-hidden="true"></span>
+            <div class="game-speech-bubble__content">
+              <p id="bubbleLine" class="game-speech-bubble__text"></p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+
+      <!-- the way back and the way on, as one pair in the top corner -->
+      <div id="nav">
+        <!-- The arrows are drawn, not typed: neither font has ◀ ▶, so
+             as characters every laptop drew its own. -->
+        <button id="backBtn" aria-label="Previous screen" disabled><span class="arrow" aria-hidden="true"></span>Back</button>
+        <button id="nextBtn" aria-label="Next screen">Next<span class="arrow" aria-hidden="true"></span></button>
+      </div>
+
+      <!-- the way on, in the corner, once she has said what the formula
+           gives (37, 39, 41) -->
+      <button id="goOn" class="hidden" aria-label="Next screen">Next<span class="arrow" aria-hidden="true"></span></button>
+
+    </div>
+
+    <!-- ============ effects ============ -->
+    <!-- the hand that comes down and taps the point when nobody has
+         moved for a while; positioned and shown by Hint -->
+
+    <div id="fxLayer"></div>
+    <!-- a wrong answer, felt at the edges of the frame; FX.missGlow -->
+    <div id="missGlow" aria-hidden="true"></div>
+    <div id="leafLayer" class="hidden"></div>
+
+  </div>
+</div>
+
+<script src="js/config.js?v=20260930120459"></script>
+<script src="js/asset-manifest.js?v=20260930120459"></script>
+<script src="js/preload.js?v=20260930120459"></script>
+<script src="js/audio.js?v=20260930120459"></script>
+<script src="js/voice.js?v=20260930120459"></script>
+<script src="js/fx.js?v=20260930120459"></script>
+<script src="js/number-selector.js?v=20260930120459"></script>
+<script src="js/triangle-options.js?v=20260930120459"></script>
+<script src="js/hint-note.js?v=20260930120459"></script>
+<script src="js/screen-jump.js?v=20260930120459"></script>
+<script src="js/town.js?v=20260930120459"></script>
+<script src="js/formula-table.js?v=20260930120459"></script>
+<script src="js/math-text.js?v=20260930120459"></script>
+<script src="js/game.js?v=20260930120459"></script>
+<!-- inside the Climb Game's <iframe> (?embed=1): tells the game when the
+     lesson is up and when it is over; does nothing on its own -->
+<script src="js/embed.js?v=20260930120459"></script>
+</body>
+</html>

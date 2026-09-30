@@ -1,0 +1,437 @@
+/* =============================================================
+   Number selector — the combination lock, wearing its own art.
+
+   Every surface here is `assets/buttons.webp`. It used to be CSS:
+   gradients for the curve of a drum, inset shadows for the well, a
+   chevron built from two borders on a rotated box, four golds declared
+   as custom properties. That was written because there was no artwork.
+   There is artwork now, so the reconstruction is gone and the drawing
+   is in its place.
+
+   The markup is the component's own (js/number-selector.js) and has
+   not changed: .selector holds the pointer, .reel (.seat + .lane of
+   .cell) and the two .side buttons; .check sits under it. Only the
+   skin is new, so every behaviour the game relies on — the roll, the
+   two buffers off either end, the correct and wrong states — works as
+   it did.
+
+   NOTHING STRETCHES. Every piece — the housing, the well, the dials,
+   GO, the pointer and the two tiles — is a plain crop of the sheet at
+   the aspect it was drawn at.
+
+   The housing and the well were going to be nine-sliced, because the
+   layout's bar was 2.0 wide to 1 tall where the drawn one is 2.59.
+   Slicing worked, and left a faint seam across the cream at each
+   region boundary: the control is scaled twice over, by --k and by the
+   stage, so those boundaries land between device pixels. The fix was
+   not a better slice. It was to stop asking the bar to be a shape it
+   was not drawn as — the bar takes the drawing's own proportion now,
+   and a piece that is never stretched cannot seam.
+
+   Sizes are fixed pixels scaled as a whole by --k, never vw: the stage
+   is already transform-scaled to the viewport, so a viewport-relative
+   size would be scaled a second time and come out different at every
+   window width.
+   ============================================================= */
+
+.number-control {
+  /* The path is relative to THIS FILE, and it has to stay that way.
+
+     A relative url() inside a custom property is resolved against the
+     stylesheet where the var() is SUBSTITUTED — not where the value was
+     set. So handing this property a document-relative path from JS
+     (`--sheet: url("assets/buttons.webp")`, the form every other asset
+     in the game uses) does not do what it looks like: it is resolved
+     against css/ and asks for css/assets/buttons.webp, which is not
+     there. Every surface cut from the sheet then comes up empty while
+     the live digits drawn on them carry on rendering — the control is
+     there and invisible. Tried, measured, reverted.
+
+     If this ever needs to move, change the path here. */
+
+  /* ---- the layout ------------------------------------------------
+     Unchanged. The dials overhang the housing's ends, the pointer sits
+     in the gold band over the well, GO stands under the bar's middle:
+     those relationships ARE the control, and only the skin is being
+     replaced. */
+  --frame-w: 660px;
+  --frame-x: 78px;           /* room for the dials to overhang */
+  --bar-top: 30px;
+  /* The bar is 794 x 307 on the sheet, so it is that shape here. It
+     used to be 660 x 330 — a description of a drawing nobody had. */
+  --bar-h:   calc(var(--frame-w) * 307 / 794);
+  --frame-h: calc(var(--bar-top) + var(--bar-h));
+
+  /* The well the drums turn in: wide enough to fill the bar between
+     the two dials, and 758 x 258 of shape, which is the drawing's. */
+  --win-w:   calc(var(--frame-w) * 0.74);
+  --win-h:   calc(var(--win-w) * 258 / 758);
+  --win-x:   calc((var(--frame-w) - var(--win-w)) / 2);
+  --win-y:   calc(var(--bar-top) + var(--bar-h) * 0.24);
+
+  /* Its trough, measured off the art: within the well's 758 x 258 the
+     cream starts 25px in at the sides, 42 down from the top and 23 up
+     from the foot — the top rim is the thicker one because the trough
+     is sunk. The drums clip against the TROUGH, not the well's outside,
+     so a number slides behind the rim rather than across it. */
+  --rim-x:   calc(var(--win-w) * 0.0330);
+  --rim-t:   calc(var(--win-h) * 0.1628);
+  --rim-b:   calc(var(--win-h) * 0.0891);
+
+  --reel-x:  calc(var(--win-x) + var(--rim-x));
+  --reel-y:  calc(var(--win-y) + var(--rim-t));
+  --reel-w:  calc(var(--win-w) - var(--rim-x) * 2);
+  --reel-h:  calc(var(--win-h) - var(--rim-t) - var(--rim-b));
+
+  /* Three drums across the trough, the next two running on behind it. */
+  --pitch:    calc(var(--reel-w) / 3);
+  /* Each tile at the aspect it was DRAWN at — 215 x 213 unselected,
+     225 x 217 selected. Both are within a hair of square, and the old
+     rule built them at 0.87 and 0.97, which is what made the drums
+     read as ovals. */
+  --barrel-w: calc(var(--pitch) * 0.80);
+  --barrel-h: calc(var(--barrel-w) * 217 / 225);
+  --side-w:   calc(var(--pitch) * 0.74);
+  --side-h:   calc(var(--side-w) * 213 / 215);
+
+  /* The dials sit on the bar's own middle line, at the art's own
+     242 x 240 — square, near enough. */
+  --dial-y:  calc(var(--bar-top) + var(--bar-h) / 2);
+  --arrow:   150px;
+  --arrow-h: calc(var(--arrow) * 240 / 242);
+
+  /* GO is a PILL, not a disc: 604 x 200 on the sheet. It was drawn as a
+     circle here once, because a circle was all the CSS had.
+
+     It used to take 604 of the housing's 794 across, which is the share
+     the two have on the sheet — and at that share it comes out almost
+     as wide as the bar standing above it, so the control reads as two
+     stacked bars rather than as a button under a panel. Narrowed to
+     three fifths of the frame.
+
+     The height still follows the WIDTH at the drawing's own 604 x 200,
+     so the pill keeps its shape however wide it is set; the change
+     spends less of the row on it, it does not squash it. */
+  --go-w:    calc(var(--frame-w) * 0.60);
+  --go-h:    calc(var(--go-w) * 200 / 604);
+
+  /* And the pointer at 193 x 129, sized to the gold band it sits in
+     rather than to the sheet — the band is the layout's, not the
+     artist's. */
+  --pt-h:    48px;
+  --pt-w:    calc(var(--pt-h) * 193 / 129);
+
+  position: absolute;
+  width: 816px;
+  height: 460px;
+  transform-origin: top left;
+  transform: scale(var(--k, 1));
+  font-family: 'Lilita One', 'Nunito', system-ui, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+  z-index: 6;
+}
+
+/* ---- the housing ------------------------------------------------- */
+.number-control .selector {
+  position: absolute;
+  left: var(--frame-x);
+  top: 0;
+  width: var(--frame-w);
+  height: var(--frame-h);
+}
+
+.number-control .selector::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: var(--bar-top);
+  height: var(--bar-h);
+  background-image: var(--sheet);
+  background-repeat: no-repeat;
+  /* (73, 33, 794, 307) of 1774 x 887 */
+  background-size: 223.426% 288.925%;
+  background-position: 7.449% 5.690%;
+  z-index: 0;
+}
+
+/* The well, on the bar. */
+.number-control .selector::after {
+  content: "";
+  position: absolute;
+  left: var(--win-x);
+  top: var(--win-y);
+  width: var(--win-w);
+  height: var(--win-h);
+  background-image: var(--sheet);
+  background-repeat: no-repeat;
+  /* (928, 71, 758, 258) */
+  background-size: 234.037% 343.798%;
+  background-position: 91.339% 11.288%;
+  z-index: 1;
+}
+
+/* ---- the pointer over the chosen number -------------------------- */
+.number-control .pointer {
+  position: absolute;
+  left: 50%;
+  top: calc(var(--bar-top) + 10px);
+  width: var(--pt-w);
+  height: var(--pt-h);
+  margin-left: calc(var(--pt-w) / -2);
+  background-image: var(--sheet);
+  background-repeat: no-repeat;
+  /* (1414, 426, 193, 129) of 1774 x 887 */
+  background-size: 919.17% 687.60%;
+  background-position: 89.437% 56.201%;
+  transition: transform 140ms cubic-bezier(.22, .68, .3, 1),
+              left 280ms cubic-bezier(.22, .68, .3, 1);
+  z-index: 5;
+}
+
+/* ---- the trough the drums turn in --------------------------------
+   No skin of its own — the well above is the skin. This is the window
+   they are seen through, inset to the trough so a drum leaving the
+   middle disappears behind the rim. */
+.number-control .reel {
+  position: absolute;
+  left: var(--reel-x);
+  top: var(--reel-y);
+  width: var(--reel-w);
+  height: var(--reel-h);
+  overflow: hidden;
+  z-index: 2;
+}
+
+/* The seat is the SELECTED TILE. It used to be a hit area with nothing
+   on it, and the gold drum was painted on .cell.on — which rotates, so
+   the tile the child is looking at was a different element from one
+   press to the next. Drawn here it stays put and the numbers roll
+   through it, which is what the drawing shows. */
+.number-control .seat {
+  position: absolute;
+  left: 50%; top: 50%;
+  width: var(--barrel-w);
+  height: var(--barrel-h);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  background-image: var(--sheet);
+  background-repeat: no-repeat;
+  /* (494, 645, 225, 217) */
+  background-size: 788.44% 408.76%;
+  background-position: 31.891% 96.269%;
+  /* It moves out to the end drum when the choice does (see middle()). */
+  transition: left 280ms cubic-bezier(.22, .68, .3, 1);
+  z-index: 3;
+}
+
+.number-control .lane { position: absolute; top: 0; right: 0; bottom: 0; left: 0; }
+
+/* ---- the drums --------------------------------------------------- */
+.number-control .cell {
+  position: absolute;
+  left: 50%; top: 50%;
+  width: var(--side-w);
+  height: var(--side-h);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #5E5145;
+  font-size: calc(var(--side-h) * 0.56);
+  /* Lilita One has one weight. The 900 asked for here was a bold every
+     browser faked in its own way; this outline is the thickness this
+     Mac's Chrome faked, written down, so every laptop draws the same
+     digits. */
+  font-weight: 400;
+  -webkit-text-stroke: .031em currentColor;
+  line-height: 1;
+  background-image: var(--sheet);
+  background-repeat: no-repeat;
+  /* (184, 646, 215, 213) */
+  background-size: 825.12% 416.43%;
+  background-position: 11.802% 95.846%;
+  transition: transform 280ms cubic-bezier(.22, .68, .3, 1),
+              color 200ms ease, opacity 200ms ease;
+}
+
+/* The chosen one carries NO tile: the one under it is .seat, which the
+   sheet draws as the selected tile already. Painting a second tile
+   here would be two tiles in one place. It keeps its size, because the
+   inline transform written by the component scales against it, and it
+   keeps the blue the sheet's own "7" is set in. */
+.number-control .cell.on {
+  width: var(--barrel-w);
+  height: var(--barrel-h);
+  color: #0042C1;
+  font-size: calc(var(--barrel-h) * 0.66);
+  background-image: none;
+  z-index: 4;
+}
+
+.number-control .cell.off {
+  opacity: .92;
+  z-index: 1;
+}
+
+/* Past the end of the range there is no number. Only the two drums
+   out of sight under the arrows are ever past it: the window stops at
+   an end rather than showing an empty drum (see middle()). */
+.number-control .cell.empty { color: transparent; }
+/* A cell carried across the reel rather than along it must not be seen
+   travelling — see seatCell() in the component. */
+.number-control .cell.jump { transition: none; }
+
+/* The seating click: the number settles into its tile. */
+.number-control .cell.on { animation: lockIntoPlace 220ms cubic-bezier(.22,.68,.32,1); }
+@keyframes lockIntoPlace {
+  0%   { letter-spacing: 0; }
+  45%  { letter-spacing: .5px; }
+  100% { letter-spacing: 0; }
+}
+
+/* ---- the two dials ----------------------------------------------
+   Children of the HOUSING, not of the widget, so every offset here is
+   measured from the housing's own top-left corner. */
+.number-control .side {
+  position: absolute;
+  top: calc(var(--dial-y) - var(--arrow-h) / 2);
+  width: var(--arrow);
+  height: var(--arrow-h);
+  padding: 0;
+  border: 0;
+  background-color: transparent;
+  background-image: var(--sheet);
+  background-repeat: no-repeat;
+  cursor: pointer;
+  transition: transform 120ms cubic-bezier(.22,.68,.3,1),
+              filter 120ms ease, opacity 160ms ease;
+  z-index: 6;
+}
+.number-control .side.prev {
+  left: calc(var(--arrow) / -2);
+  /* (104, 380, 242, 240) */
+  background-size: 733.06% 369.58%;
+  background-position: 6.788% 58.733%;
+}
+.number-control .side.next {
+  left: calc(var(--frame-w) - var(--arrow) / 2);
+  /* (390, 380, 241, 240) */
+  background-size: 736.10% 369.58%;
+  background-position: 25.440% 58.733%;
+}
+
+/* The arrowhead is drawn into the disc, so the span that used to draw
+   it has nothing left to do. It carries no text — the button's
+   aria-label is what a screen reader reads — so it simply goes. */
+.number-control .chev { display: none; }
+
+@media (hover: hover) and (pointer: fine) { .number-control .side:hover:not(:disabled) { transform: translateY(-2px); } }
+.number-control .side:active:not(:disabled),
+.number-control .side.is-pressed:not(:disabled) {
+  transform: translateY(5px) scale(.97);
+  filter: brightness(.90);
+}
+.number-control .side:disabled { opacity: .45; cursor: default; }
+
+/* ---- GO ----------------------------------------------------------- */
+.number-control .check {
+  position: absolute;
+  left: calc(var(--frame-x) + var(--frame-w) * 0.50);
+  top: calc(var(--bar-top) + var(--bar-h) - var(--go-h) * 0.12);
+  width: var(--go-w);
+  height: var(--go-h);
+  margin-left: calc(var(--go-w) / -2);
+  padding: 0;
+  border: 0;
+  background-color: transparent;
+  background-image: var(--sheet);
+  background-repeat: no-repeat;
+  /* (716, 400, 604, 200) */
+  background-size: 293.71% 443.50%;
+  background-position: 61.197% 58.224%;
+  /* The word is in the drawing. The text stays in the DOM — taking it
+     out is how a screen reader ended up reading a label that said
+     something the button did not — it simply stops being drawn twice. */
+  color: transparent;
+  font-size: 0;
+  cursor: pointer;
+  transition: transform 120ms cubic-bezier(.22,.68,.3,1),
+              filter 160ms ease, opacity 160ms ease;
+  z-index: 5;
+}
+
+@media (hover: hover) and (pointer: fine) { .number-control .check:hover:not(:disabled) { transform: translateY(-2px); } }
+.number-control .check:active:not(:disabled),
+.number-control .check.is-pressed:not(:disabled) {
+  transform: translateY(6px) scale(.98);
+  filter: brightness(.90);
+}
+.number-control.locked .check { opacity: .55; cursor: default; }
+@media (hover: hover) and (pointer: fine) { .number-control.locked .check:hover { transform: none; } }
+
+/* ---- right and wrong ----------------------------------------------
+   No artwork for either — the sheet gives one frame per piece — so both
+   are said over the drawing rather than by swapping it. */
+.number-control.is-correct .check {
+  transform: translateY(-3px);
+  filter: brightness(1.08) drop-shadow(0 0 20px rgba(70, 225, 110, .85));
+}
+.number-control.is-correct .cell.on {
+  color: #14853A;
+  animation: goodPop 400ms cubic-bezier(.22, .68, .3, 1);
+}
+@keyframes goodPop {
+  0%   { filter: brightness(1); }
+  40%  { filter: brightness(1.14); }
+  100% { filter: brightness(1); }
+}
+
+/* A wrong answer wobbles the drum it was chosen on. Not the screen,
+   and not the whole control: the mistake is the number. */
+.number-control.is-wrong .cell.on {
+  color: #C4503A;
+  animation: drumWobble 340ms cubic-bezier(.36, .07, .19, .97);
+}
+@keyframes drumWobble {
+  20% { margin-left: -7px; }
+  45% { margin-left: 7px; }
+  70% { margin-left: -4px; }
+  100% { margin-left: 0; }
+}
+.number-control.is-wrong .check { filter: saturate(.45) brightness(.92); }
+
+/* The tick the reel used to show on a right answer: GO carries its own
+   feedback, so it stays out of the way. */
+.number-control .tick { display: none; }
+
+.number-control.hidden { display: none !important; }
+
+/* It arrives from below when she comes down onto it. */
+/* Backwards only: its last frame is the control's own style, and a frame
+   held for good would keep it on a layer of its own for good. */
+.number-control.rising { animation: ncRise .42s cubic-bezier(.22, .68, .3, 1) backwards; }
+@keyframes ncRise {
+  from { opacity: 0; transform: scale(var(--k, 1)) translateY(38px); }
+  to   { opacity: 1; transform: scale(var(--k, 1)) translateY(0); }
+}
+/* And away again the same way, when she steps down off it. */
+.number-control.sinking { animation: ncSink .3s cubic-bezier(.5, 0, .75, .4) both; pointer-events: none; }
+@keyframes ncSink {
+  from { opacity: 1; transform: scale(var(--k, 1)) translateY(0); }
+  to   { opacity: 0; transform: scale(var(--k, 1)) translateY(38px); }
+}
+
+html.calm .number-control .cell,
+html.calm .number-control .side,
+html.calm .number-control .check,
+html.calm .number-control .pointer { transition-duration: 1ms; }
+html.calm .number-control .cell.on { animation: none; }
+html.calm .number-control.is-wrong .cell.on,
+html.calm .number-control.is-correct .cell.on { animation: none; }
+
+/* The sheet itself, declared on the root rather than on the control: the
+   loader (js/preload.js) points it at the copy it fetched by setting it on
+   <html>, which only reaches it here. Relative to this stylesheet, as the
+   note above explains. */
+:root { --sheet: url('../assets/buttons.webp?v=20260930120459'); }

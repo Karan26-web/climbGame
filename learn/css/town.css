@@ -1,0 +1,302 @@
+/* =============================================================
+   The town — self-contained.
+
+   Everything is namespaced under .town-layer, so the component can be
+   moved or removed without touching the game. Sizes come in as custom
+   properties from the board (--w, --h, --cell), so the buildings grow
+   and shrink with the cells rather than with the stage.
+   ============================================================= */
+
+.town-layer {
+  position: absolute;
+  left: 0; top: 0; right: 0; bottom: 0;
+  /* It sits over a board whose points are tappable. Nothing here may
+     ever eat one of those taps. */
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 420ms ease;
+  z-index: 6;
+}
+.town-layer.on { opacity: 1; }
+.town-layer * { box-sizing: border-box; }
+
+/* One place: its pill, and the building under it. Anchored by its own
+   foot on the coordinate it stands on, so the dot and the coordinates
+   written beneath stay clear. */
+.town-place {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  width: var(--w, 110px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--cell, 78px) * 0.07);
+}
+
+/* ---------------- the name pill ---------------- */
+.town-pill {
+  /* Never smaller than a name can be read at: on the wide board a cell
+     is a third the size, and a pill a third the size is a smudge. */
+  padding: max(4px, calc(var(--cell, 78px) * 0.055)) max(12px, calc(var(--cell, 78px) * 0.16));
+  border-radius: 999px;
+  white-space: nowrap;
+  font-family: 'Nunito', system-ui, sans-serif;
+  font-weight: 600;
+  font-size: max(20px, calc(var(--cell, 78px) * 0.27));
+  line-height: 1.15;
+  color: #FFFFFF;
+  box-shadow: 0 2px 5px rgba(20, 35, 70, .22);
+}
+/* The same three colours the answer buttons carry, so a child can pair
+   a pill with a button without reading either. The names are still on
+   both: colour is the second channel here, never the only one. */
+.town-place[data-tone="teal"]   .town-pill { background: #1E88A8; }
+/* Yellow where there was red: red is the colour a wrong answer flashes
+   in this game. Dark type, since white on yellow cannot be read. */
+.town-place[data-tone="yellow"] .town-pill { background: #F2B41C; color: #3A2A05; }
+.town-place[data-tone="violet"] .town-pill { background: #6B3FA0; }
+/* Five places now, so five colours a child can tell apart at a glance —
+   with every one of them still carrying its name. */
+.town-place[data-tone="blue"]   .town-pill { background: #2A5FA8; }
+.town-place[data-tone="green"]  .town-pill { background: #3E7D38; }
+
+/* ---------------- the building ---------------- */
+/* One picture, cut from the town sheet. Everything that used to be
+   here — an awning of repeating stripes, a roof clipped out of a
+   triangle, window and door boxes per kind, a cafe's round sign with a
+   cup drawn into it — is gone. The crop is set from town.js, which is
+   the only place that knows which rect a kind takes. */
+.town-build {
+  position: relative;
+  width: 100%;
+  height: var(--h, 96px);
+  background-repeat: no-repeat;
+  /* The art carries its own outlines; this is the only shadow, and it
+     is what sets a place down on the paper rather than over it. */
+  filter: drop-shadow(0 3px 4px rgba(40, 30, 10, .20));
+}
+
+/* Hung from its point (a tower whose top is the point, a van parked
+   under it): the picture just below the point and its name below the
+   picture, so nothing sits on the point or its coordinates. */
+.town-place.hang { transform: translate(-50%, 0); flex-direction: column-reverse; }
+/* Standing in the corner of the first quadrant beside its point, its
+   foot on the x-axis's line and its left edge just right of the
+   y-axis — the station, at the origin. */
+.town-place.q1 { transform: translate(0, -100%); }
+/* A name beside the picture (`tag: 'right'`): out of the flow, so the
+   picture alone stands on its point, and the name at its middle height
+   just to its right. */
+.town-place.tag-right .town-pill {
+  position: absolute;
+  left: calc(100% + var(--cell, 78px) * 0.1);
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+/* Phones and short windows scale through --cell like everything else,
+   so there is nothing width-specific to undo here. */
+
+/* A place the screen is not about: still on the map, stepped back. */
+.town-place { transition: opacity .42s ease; }
+.town-place.dim { opacity: .3; }
+
+/* ---------------- a door that opens ---------------- */
+/* Over the door in the picture, exactly (town.js sizes it from the
+   sheet). Shut, it has nothing of its own to show and the drawing is
+   the door. Ajar, the doorway behind goes dark and the leaf — the same
+   pixels, cut from the same sheet — stands over it, still shut; open,
+   the leaf swings in on its hinge, the side away from the knob, and
+   the dark inside shows. */
+.town-door { position: absolute; }
+.town-door.ajar { background: linear-gradient(#1F130A, #3A2414); }
+.town-door-leaf {
+  position: absolute;
+  left: 0; top: 0; width: 100%; height: 100%;
+  background-repeat: no-repeat;
+  visibility: hidden;
+  transform-origin: 0 50%;
+  transition: transform var(--door-ms, 320ms) ease-in-out,
+              filter var(--door-ms, 320ms) ease-in-out;
+}
+.town-door.ajar .town-door-leaf { visibility: visible; }
+/* Turned away from the light as it goes in, so a shade darker. */
+.town-door.open .town-door-leaf {
+  transform: perspective(var(--door-p, 60px)) rotateY(72deg);
+  filter: brightness(.78);
+}
+
+/* ---------------- someone walking ---------------- */
+/* Over every place, so a door is somewhere she comes out of rather
+   than a wall she comes out from behind. Moved by transform alone. */
+.town-walker {
+  position: absolute;
+  left: 0; top: 0;
+  opacity: 0;
+  will-change: transform, opacity;
+}
+.town-walker-fig {
+  width: 100%; height: 100%;
+  background-repeat: no-repeat;
+}
+
+/* ---------------- drawn over a picture (town.js OVERLAY) ------------- */
+.town-overlay {
+  position: absolute;
+  left: 0; top: 0;
+  width: 100%; height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+/* Fire: three flames in one, darkest outside; each flickers on its own
+   beat from its own foot. */
+.town-flames .f-out { fill: #EF4B2A; stroke: #7E1E0E; stroke-width: 5; stroke-linejoin: round; }
+.town-flames .f-mid { fill: #F99A1C; }
+.town-flames .f-in  { fill: #FFE066; }
+.town-flames .flick {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: flameFlick 1s ease-in-out infinite;
+}
+@keyframes flameFlick {
+  0%, 100% { transform: scale(1, 1) skewX(0deg); }
+  25%      { transform: scale(.95, 1.09) skewX(-3deg); }
+  50%      { transform: scale(1.04, .93) skewX(2deg); }
+  75%      { transform: scale(.97, 1.05) skewX(-1deg); }
+}
+/* The windows lit from inside, and breathing. */
+.town-flames .lit { fill: #FF9A2E; animation: windowGlow 1.3s ease-in-out infinite; }
+@keyframes windowGlow {
+  0%, 100% { opacity: .55; }
+  50%      { opacity: .9; }
+}
+/* Smoke going up and spreading out, and gone. */
+.town-flames .puff {
+  fill: #5E6270;
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+  animation: smokeRise 2.6s linear infinite;
+}
+@keyframes smokeRise {
+  0%   { transform: translate(0, 0) scale(.55); opacity: 0; }
+  15%  { opacity: .5; }
+  100% { transform: translate(-16px, -130px) scale(1.8); opacity: 0; }
+}
+/* The fire engine's ladder, its cannon and its lamp. */
+.town-ladder .rail, .town-ladder .rung { fill: #DCE2EA; stroke: #2B3A67; stroke-width: 2.5; }
+.town-ladder .bracket, .town-ladder .lamp-base { fill: #2B3A67; }
+.town-ladder .cannon-base { fill: #A0AAB8; stroke: #2B3A67; stroke-width: 2.2; }
+.town-ladder .cannon { fill: #F0B840; stroke: #2B3A67; stroke-width: 2.4; stroke-linejoin: round; }
+.town-ladder .cannon-tip { fill: #966014; stroke: #2B3A67; stroke-width: 2; }
+.town-ladder .cannon-pivot { fill: #DCE2EA; stroke: #2B3A67; stroke-width: 2.2; }
+.town-ladder .lamp { fill: #FF3B3B; stroke: #7E1E0E; stroke-width: 2; animation: lampFlash .8s steps(2, jump-none) infinite; }
+@keyframes lampFlash {
+  0%   { fill: #FF3B3B; }
+  100% { fill: #FFD9D9; }
+}
+
+/* ---------------- the fire put out (54) ----------------
+   Town.douse: each flame dies on its own beat (`--out`, the ones the
+   jet reaches first going first) — flattening as the water hits it,
+   then gone — the windows go dark, and the smoke turns white and
+   clears. */
+.town-flames .flame-life { transform-box: fill-box; transform-origin: 50% 100%; }
+.town-flames.dousing .flame-life {
+  animation: flameOut 1.1s cubic-bezier(.45, 0, .75, .45) var(--out, 0ms) forwards;
+}
+@keyframes flameOut {
+  0%   { transform: scale(1, 1); opacity: 1; }
+  35%  { transform: scale(1.1, .78); opacity: 1; }
+  100% { transform: scale(.2, 0); opacity: 0; }
+}
+.town-flames.dousing .lit { animation: litOut 1.2s ease-out .4s forwards; }
+@keyframes litOut { to { opacity: 0; } }
+.town-flames.dousing .puff { fill: #EEF2F6; animation-name: steamRise; animation-duration: 2.1s; }
+@keyframes steamRise {
+  0%   { transform: translate(0, 0) scale(.5); opacity: 0; }
+  18%  { opacity: .8; }
+  100% { transform: translate(10px, -150px) scale(2.2); opacity: 0; }
+}
+.town-flames .smoke { transition: opacity 1.6s ease 2.2s; }
+.town-flames.dousing .smoke { opacity: 0; }
+
+/* The engine, driven off its spot: its picture and name leave with it. */
+.town-place.left .town-build { visibility: hidden; }
+.town-place.left .town-pill { opacity: 0; transition: opacity .4s ease; }
+/* …and here it is, over every place, a frame at a time out of its strip. */
+.town-mover {
+  position: absolute;
+  left: 0; top: 0;
+  pointer-events: none;
+  filter: drop-shadow(0 3px 4px rgba(40, 30, 10, .20));
+}
+.town-mover.moving { will-change: transform; }
+.town-mover-fig { width: 100%; height: 100%; background-repeat: no-repeat; }
+
+/* Its cannon, turning on its turret, and a puff of spray at its mouth
+   while it sprays. */
+.town-cannon .spray-mist {
+  fill: rgba(232, 245, 255, .8);
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+}
+.town-mover.spraying .town-cannon .spray-mist { animation: mistPuff .5s ease-in-out infinite; }
+
+/* Its water: a jet in an arc, a white core down it and the flow running
+   along it once it has reached the fire, and drops and spray where it
+   lands. */
+.town-water {
+  position: absolute;
+  left: 0; top: 0;
+  width: 100%; height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+.town-water .jet { fill: none; stroke: rgba(118, 190, 250, .92); stroke-linecap: round; }
+.town-water .jet-core { fill: none; stroke: rgba(242, 250, 255, .95); stroke-linecap: round; }
+.town-water .jet-flow { fill: none; stroke: rgba(255, 255, 255, .85); stroke-linecap: round; opacity: 0; }
+.town-water.flowing .jet-flow { opacity: 1; animation: jetFlow .42s linear infinite; }
+@keyframes jetFlow { to { stroke-dashoffset: var(--flow, -24px); } }
+.town-water .drop,
+.town-water .mist { opacity: 0; transform-box: fill-box; transform-origin: 50% 50%; }
+.town-water .drop { fill: #C6E6FF; stroke: #6AB0EE; stroke-width: 1; }
+.town-water .mist { fill: rgba(236, 246, 255, .6); }
+.town-water.splashing .drop { animation: dropFly .72s cubic-bezier(.2, .6, .5, 1) infinite; }
+@keyframes dropFly {
+  0%   { transform: translate(0, 0) scale(.5); opacity: 0; }
+  15%  { opacity: 1; }
+  100% { transform: translate(var(--dx), var(--dy)) scale(1); opacity: 0; }
+}
+.town-water.splashing .mist { animation: mistPuff .9s ease-in-out infinite; }
+@keyframes mistPuff {
+  0%, 100% { transform: scale(.7); opacity: 0; }
+  45%      { transform: scale(1.15); opacity: .75; }
+}
+
+/* A place she is naming: a swell and a warm glow, twice. The `scale`
+   property rather than a transform, so nothing already transformed —
+   a tag-right name — is knocked out of place. */
+.town-place.glow .town-build { animation: townGlow 1.2s ease-in-out 2; }
+.town-place.glow .town-pill  { animation: pillBump 1.2s ease-in-out 2; }
+@keyframes townGlow {
+  0%, 100% { scale: 1; filter: drop-shadow(0 3px 4px rgba(40, 30, 10, .20)); }
+  50%      { scale: 1.09; filter: drop-shadow(0 0 10px rgba(255, 214, 90, .95)) drop-shadow(0 3px 4px rgba(40, 30, 10, .20)); }
+}
+@keyframes pillBump { 50% { scale: 1.1; } }
+
+/* Nothing flickers, smokes, flashes or swells for a child who has
+   asked for a calm screen. */
+html.calm .town-flames *, html.calm .town-ladder *,
+html.calm .town-place.glow .town-build, html.calm .town-place.glow .town-pill { animation: none !important; }
+html.calm .town-flames .puff { opacity: .35; }
+/* A calm fire goes out without moving: it fades. */
+html.calm .town-flames.dousing .flame-life,
+html.calm .town-flames.dousing .lit { opacity: 0; transition: opacity 1s ease; }
+@media (prefers-reduced-motion: reduce) {
+  .town-flames *, .town-ladder *, .town-place.glow .town-build, .town-place.glow .town-pill { animation: none !important; }
+  .town-flames .puff { opacity: .35; }
+  .town-flames.dousing .flame-life, .town-flames.dousing .lit { opacity: 0; transition: opacity 1s ease; }
+}
+

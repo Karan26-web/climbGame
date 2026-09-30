@@ -31,13 +31,16 @@ name to it the moment you add the file. So:
 
 A handful of cues are recordings that **do** work over `file://`. `fetch()` is refused
 there, but a `<script src>` is not, so `tools/import_sfx.py` trims, loops and levels them
-into one generated script, `assets/audio/sfx.js` (`window.CG_SFX = { name: base64 WAV }`,
-mono 24 kHz), which `index.html` loads ahead of the game. `A.loadEmbedded()` decodes them
+into one generated script, `assets/audio/sfx.js` (`window.CG_SFX = { name: base64 Ogg
+Opus }`, mono, 48 kbps — libopus through PyAV), which `index.html` loads ahead of the
+game. `A.loadEmbedded()` decodes them
 when audio starts. A cue missing from it, or the whole file, keeps its synthesised version.
 
 | Cue | Plays when | Source (all CC0 — see `art_src/audio/SOURCES.md`) |
 |---|---|---|
-| `brake` | the auto-brake grabs at a chasm | `assets/audios/break.mp3` |
+| `brake` | the auto-brake grabs at a chasm: the tyre screech, one held voice (`A.screech`) | `art_src/audio/break.mp3` |
+| `skid` | under the screech, from the same instant: the tyres scrubbing to a halt on gravel, a second held voice let go the moment the truck stands (`A.brakeGrab` / `A.skidRelease`) | Freesound 637161, van stopping on gravel |
+| `airbrake` | the instant the truck stands: the air brakes hissing off, with a synthesised thud through the springs (`A.brakeStop`) | Freesound 705390, air brake applied |
 | `saw_run` + `saw_cut` | the plank machine cuts (`A.saw`) — two loops, the motor pitched up/down for spin-up and spin-down, the cut layered on only while wood is in the blade | Freesound 411222, table saw |
 | `lever` | an answer is confirmed: the machine's lever latches | Kenney RPG Audio |
 | `tick` | each unit of plank passes the blade — one tick per unit, a semitone higher each time, so the count can be heard | Kenney Impact Sounds |
@@ -56,19 +59,19 @@ run the tool, and record the source in `SOURCES.md`.
 
 | File (`assets/audio/…`) | Fires when | Wanted character |
 |---|---|---|
-| `coin.webm` | coin picked up | short, bright, ~80 ms, must survive firing 6× in a second |
-| `gem.webm` | gem (+25) | same family as coin, a third up, a touch longer |
+| `coin.webm` | *(no longer fired: pickups are gone)* | short, bright, ~80 ms |
+| `gem.webm` | a plank fitted (`solveGap`) | same family as coin, a third up, a touch longer |
 | `star.webm` | a star lands on the results screen | sparkle, ~250 ms |
-| `fuel.webm` | fuel can | mechanical *clunk-glug*, not a chime — it is a different kind of reward |
+| `fuel.webm` | *(no longer fired: there is no fuel)* | — |
 | `boost.webm` | boost pickup | whoosh with low-end push, ~500 ms |
-| `check.webm` | checkpoint crossed | two-note rise, **must cut through engine noise**, ~300 ms |
+| `check.webm` | the question arrives (the reveal's `ask` beat); the end of free play | two-note rise, ~300 ms |
 | `land.webm` | soft landing (impact > 320) | dirt thump, dry, ~150 ms |
 | `thud.webm` | hard landing (impact > 760) | heavier, with suspension bottom-out |
 | `crash.webm` | run-ending crash | metal + dirt, ~700 ms, no comedy |
 | `flip.webm` | flip / big air banked | rising sweep, celebratory |
 | `click.webm` | any button | 40 ms tick, quiet |
 | `win.webm` | stage cleared | 1.5–2 s jingle, resolves upward |
-| `over.webm` | stage failed / out of fuel | 1–1.5 s, falls, **not** a joke sound |
+| `over.webm` | out of hearts | 1–1.5 s, falls, **not** a joke sound |
 | `music.webm` | first stage start, loops | see below |
 
 `music` goes in the manifest too, and is only fetched if listed.

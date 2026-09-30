@@ -27,7 +27,7 @@ This tool turns the two into what the renderer wants:
 
 Both sprites get the same alpha repair as every other sprite (fix_alpha from
 import_car.py), so bilinear filtering never drags a fringe into the outline.
---check writes docs/truck_assembly_test.png (body + wheels composited at rest)
+--check writes docs/truck_assembly_test.webp (body + wheels composited at rest)
 instead of trusting the numbers blind.
 """
 import os, sys
@@ -163,8 +163,8 @@ def main():
                 comp.alpha_composite(r, (round(hx + ox - size / 2), round(hy + oy - size / 2)))
         comp.alpha_composite(Image.fromarray(well))
         comp.alpha_composite(Image.fromarray(body))
-        comp.convert('RGB').save(os.path.join(ROOT, 'docs/truck_assembly_test.png'))
-        print('wrote docs/truck_assembly_test.png')
+        comp.convert('RGB').save(os.path.join(ROOT, 'docs/truck_assembly_test.webp'))
+        print('wrote docs/truck_assembly_test.webp')
         return 0
 
     Image.fromarray(body).save(os.path.join(ROOT, DEST_BODY), 'WEBP', quality=92, method=6)

@@ -9,39 +9,64 @@ What the game is now, why, and how to author more of it.
 **Before (v2):** eight authored stages with checkpoints, three stars, a par time and a coin
 goal — a racer with something to finish.
 
-**Now:** the same stages, but the route is cut by **chasms**, and the game is about the
-**distance formula**. At each chasm:
+**Now (2026-09-30):** one **mission** — a road cut by seven **chasms**, and the game is
+about the **distance formula**. The mission is the plain gap and the six Pythagorean
+triples in order (see "Endless gets chasms too"); three **hearts** are the only resource,
+a wrong plank costs one, and the run ends at a chequered gate with *YOU DID IT!* — or,
+out of hearts, with two ways on: back to the lesson, or play again. There is no fuel, no
+clock, no coins, no pickups: nothing on the screen but the hearts, the road and the
+question. The game does **not** teach the formula; it sits inside the lesson that does,
+so there is no hint after a miss either.
 
-*(2026-09-21: the player's flow is endless-only — see "Endless gets chasms too" below —
-but everything in this section still describes the mechanic itself, which endless now
-runs as well.)*
+At each chasm, one continuous sequence (`REVEAL` in the GAME module, each beat with its
+own cue):
 
-1. The car is eased to a stop on the near lip (the player loses the pedals ~16 m out and
-   the driver brakes; a fast arrival meets an invisible barrier in a cloud of dust).
-2. A coordinate grid fades in behind the scenery — one unit is 72 world px, a frosted
-   pane, white grid lines, an **orange x-axis and a blue y-axis** with arrowheads, ticks
-   a number every two units on a white halo, arrowheads at both ends, x/y badges — and the
-   two lips are plotted in purple and labelled in white pills sitting on the points, e.g.
-   **(−5, −2)** and **(4, −2)**. The title floats in a frosted pill over the grid. The
-   clock stops.
-3. The question comes up: *How many units should the plank be?* Beside the jeep, at
-   hood height, sit a **value box and an amber ▶ button**. The button stretches a cream
-   **ruler** up out of the box, 1 to 14 units; tapping a mark lights it blue and shows it
-   in the box; the button turns green and drops the plank. (Keyboard: Enter opens and
-   confirms, ↑/↓ or typed digits move the mark.) Lengths already tried are crossed out.
-4. The chosen plank pops into being vertically above the jeep, rotates level and slides
-   down into the gap. The accelerator comes back. Then the plank decides:
+1. **The stop.** The moment the truck is within braking distance of its hold the driver
+   stands on the brake and keeps it there: a planned hard stop (`STOP_DECEL`, ~12 m/s²)
+   with the tyre screech and the tyres scrubbing on gravel under it, dust off both tyres
+   the whole way, and as it stands, the air brakes hiss off, a thud through the springs,
+   and dust bursting forward off the wheels. It stands exactly on its mark.
+2. **The generator appears** — the plank machine rises out of the road ahead of the
+   truck, hydraulics hissing, grass and dust off its feet, a clank as it seats.
+3. **The points appear** — the two lips are plotted, one after the other, orange beads
+   with a dashed span between them.
+4. **The plane** is drawn in behind them — one unit is 72 world px, a frosted pane, a rule
+   per unit — then its axes.
+5. **The coordinates light up** — each point's label lands beside it with a pop and an
+   orange glow that dies over a second: the thing to read is here.
+6. **The question**, said the way a friend would: *Let's pick the right length for the
+   plank!* (after a miss: *Let's try another length for the plank.*) Then the console
+   and ruler arrive — the first thing that can be touched.
+
+The ruler: a **value box and a red button** on a little console. The button stretches a
+cream **ruler** out of the box (14 marks, or 21 once the big triples arrive); tapping a
+mark lights it and shows it in the box; the button becomes GO and cuts the plank.
+(Keyboard: Enter opens and confirms, ↑/↓ or typed digits move the mark.) Lengths already
+tried are crossed out. At the **first gap of a run** each step is nudged: a breathing glow
+on the very control (the red button, the ruler, GO) and one line —
+*Tap the red button to open the ruler / Tap the number of units the plank needs / Tap GO
+to cut the plank*. It speaks to the interaction, never to the maths, and it is gone by
+the second gap (`G.learned`, per run).
+
+**GO hides the plane.** The moment the plank is ordered the sheet, rules, axes and the
+dashed span fade, and only the two points and their coordinates stay — so the board
+being cut, swung across and fitted between them is the whole picture. The plane comes
+back with the question after a miss.
+
+Then the plank decides:
 
 | Answer | What the plank does | What the car does | Then |
 |---|---|---|---|
-| **exact** | its top edge runs lip to lip | drives across; `PERFECT FIT!`, +30 coins first try (+10 later) | the grid fades, the plank stays for good |
-| **any other of the 14** | one of the two below, by geometry | | |
-| **too short** | starts on the near lip, aims at the far one, sags, ends in the air | the front wheel runs off the end, the board gives way and pivots into the pit, the car goes with it: `TOO SHORT!` | fade to black, car reset on the lip, question back with that answer crossed out and a hint |
-| **too long** | will not fit between the lips, so it wedges — near end on the lip, far end jammed against the far wall √(L²−dx²) below it: a chute | slides down, the nose meets the wall, the car pitches over onto its roof: `TOO LONG!` | same reset |
+| **exact** | its top edge runs lip to lip | drives across; `PERFECT FIT!`, `FIRST TRY!` | the points fade, the plank stays for good |
+| **any other mark** | one of the two below, by geometry | | |
+| **too short** | starts on the near lip, aims at the far one, sags, ends in the air | the front wheel runs off the end, the board gives way and pivots into the pit, the car goes with it | a heart breaks; fade to black, car reset on the lip, the question back with **new coordinates** for the same hole |
+| **too long** | will not fit between the lips, so it wedges — near end on the lip, far end jammed against the far wall √(L²−dx²) below it: a chute | slides down, the nose meets the wall, the car pitches over onto its roof | same |
 
-A wrong answer costs **time, never a life**. The lesson is the reset. A child who runs out
-of lives on arithmetic stops playing; a child who watches the plank fall short works out
-why.
+A wrong answer costs **a heart**, and nothing else does — not a roll on the road, not a
+crash (a crash puts the truck back on the last safe ground, `TRY AGAIN!`). Three hearts
+gone ends the run: *OUT OF HEARTS!*, with **BACK TO THE LESSON** and **PLAY AGAIN**. The
+lesson button goes to `G.LEARN_URL` / `?learn=<url>`; with neither set it tells an
+embedding page (`postMessage { type: 'climbgame:learn' }`) and goes back a page.
 
 Every one of the three outcomes is **geometry, not a verdict**: the plank is laid into the
 physics surface and the same rigid-body car drives on it. The only scripted parts are the
@@ -50,15 +75,58 @@ car's upward momentum (`Gaps.boardGives`), and a nose that meets a wall pitches 
 over (`Gaps.wallFlip`) — and those live in the DOM-free GAPS module so the bot proves the
 very behaviour the player meets.
 
+### The lesson in the road
+
+The teaching lives in [learn/](learn/) — *Distance Formula — Swifty's Adventure*, the
+sister project (github.com/aniketchauhan-star/distance-formula), vendored whole and
+opened **inside** the game. The first time a player ever reaches a chasm, the truck
+stops as always and then, before the machine rises, the game says why the road needs the
+maths — three lines on the **instruction plate** (`assets/ui/instruction_panel.webp`,
+drawn as a 9-slice by `R.plate`: cream board, navy rim, two screws, hazard tabs — the
+machine's own livery), each with the thing it names lit (`INTRO` in the GAME module; a
+tap, Enter or the line's own time moves it on):
+
+1. *Oops, the road is broken!* — the hole outlined in marching hazard dashes, a warning
+   badge bobbing over it.
+2. *To cross this gap, we need to know the distance between its two ends.* — the two lips
+   land as points, ringed in light, the dashed span between them.
+3. *Let's explore how to find that on a coordinate plane!* — the plane comes up behind
+   them.
+
+Then the lesson fades up over the whole screen (an `<iframe>` on `learn/index.html?embed=1`,
+fetched unseen under the three lines so it is ready when they end; the game's sound
+ducks under it). Swifty's 62 screens end on *Let's head back and bridge that gap!*, the
+lesson tells the page it is over (`learn/js/embed.js`, a `postMessage`), the overlay
+fades, and the question is asked exactly as it always is — machine, points, plane,
+coordinates, ruler — the reveal starting under the fade so the machine rises as the road
+comes back.
+
+It happens once per **visit**: every load of the page has the lesson at its first chasm
+(these are shared classroom devices, so nothing about it is remembered between visits),
+and PLAY AGAIN within the visit goes straight to the question. `?lesson=0` never opens it
+(the screenshot tools pass this). **BACK TO THE LESSON** on
+the end screens opens the same overlay, and a lesson finished from there starts a fresh
+run. A lesson that never reports itself up (the `learn/` folder missing beside the game)
+is put away after twelve seconds and a *CONTINUE* is offered instead — the road never
+waits on it. [learn/EMBED.md](learn/EMBED.md) lists the three small edits the vendored
+copy carries over upstream, for the next re-sync.
+
 ### The question
 
 The answer is **measured on the ruler**, one unit at a time, so every chasm's distance is
 a whole number — a horizontal gap, or a Pythagorean triple laid on its side — and
 `CG.Gaps.question` throws at load if a stage author plots a gap whose distance is not
-whole (or is longer than the ruler). Every mark from 1 to 14 is a possible answer, so
+whole (or is longer than the ruler). Every mark on the ruler is a possible answer, so
 there are no designed distractors: a child who thinks 4 + 3 = 7 lays a 7 and watches it
-wedge. After a miss the hint pill shows the legs (`4 across and 3 up → √(4² + 3²)`) and
-the right triangle is drawn dashed under the hypotenuse on the grid.
+wedge.
+
+The ruler comes in two lengths: 14 marks (`CG.Gaps.RULER`) for stages 1–4, where the
+longest gap is 13, and for endless's plain first gap; 21 (`CG.Gaps.RULER_MAX`) from
+stage 5 on and for every endless gap after the first, where the big triples reach 20. Each runs one past the
+longest gap it serves, so even that gap has a too-long plank. The length belongs to the
+stage (`ruler: 21` in its entry), never to the gap — a ruler that ended just past the
+answer would give it away. After a miss there is no hint: the question comes back with
+new coordinates for the same hole, and a heart fewer.
 
 Surds (√58) were in an earlier draft with a four-answer panel; a ruler cannot offer them,
 and the reference design asks "how *many* units", so they are out. If they come back it
@@ -66,20 +134,38 @@ will be as a second, √-graduated ruler on a later stage.
 
 ### The curriculum
 
-Stage plans carry chasms as `{ c: [x1, y1, x2, y2] }`. The one physical constraint is the
-plank's slope: the car climbs a sustained 30° at most, so the only **uphill** triple is
-5-12-13 (23°); 3-4-5 and 6-8-10 always run downhill. Most lips are plotted *below* the
-x-axis so the orange number line floats above the gap, as in the reference art. The
-eight stages run:
+Stage plans carry chasms as `{ c: [x1, y1, x2, y2] }`. The game uses the six Pythagorean
+triples with a hypotenuse of 20 or less:
+
+| Triple | Slope laid long side down | Runs |
+|---|---|---|
+| 3-4-5, 6-8-10, 9-12-15, 12-16-20 | 37° (one shape, ×1 ×2 ×3 ×4) | downhill only |
+| 5-12-13 | 23° | both ways |
+| 8-15-17 | 28° | both ways |
+
+The one physical constraint is the plank's slope: the car climbs a sustained 30° at most,
+so the only **uphill** triples are 5-12-13 and 8-15-17. The 3-4-5 family always runs
+downhill, and its two big members only on the long side: 12-16-20 laid on its short side
+(53°) is a drop the truck noses into (3-4-5 at 53° is short enough to survive). The
+tallest plane, 12-16-20's twelve rows of drop, is what sets the question camera's zoom
+floor (`CG.Gaps.MIN_ZOOM`, 0.34) — it has to fit a 16:9 screen whole with two lines under
+the question. Most lips are plotted *below* the x-axis so the orange number line floats
+above the gap, as in the reference art; the tall ones put the origin between the lips,
+where it costs the plane no rows.
+
+Stage 1 is plain. Each stage after it brings in one new triple, smallest hypotenuse
+first, and reviews the ones before it:
 
 | Stage | Teaches | Example lips |
 |---|---|---|
 | 1 MEADOW START | distance along a line: same y, count across | (−2, −2) → (3, −2) = 5 |
 | 2 BLOSSOM TRAIL | the first slope, downhill 3-4-5 | (−2, −1) → (2, −4) = 5 |
-| 3 ORCHARD CLIMB | the long climb, 5-12-13 uphill; 6-8-10 down | (−6, −2) → (6, 3) = 13 |
-| 4 SUNSET RIDGE | steeper drops, 3-4-5 on its short side | (−2, −1) → (1, −5) = 5 |
-| 5 WIND GAP | triples both ways | (−4, −3) → (8, 2) = 13 |
-| 6–8 | every quadrant, up to 6 chasms a stage | (−8, −4) → (4, 1) = 13 |
+| 3 ORCHARD CLIMB | twice the size: 6-8-10 | (−5, 2) → (3, −4) = 10 |
+| 4 SUNSET RIDGE | the long climb, 5-12-13 uphill; 3-4-5 on its short side | (−6, −2) → (6, 3) = 13 |
+| 5 WIND GAP | 3-4-5 scaled up: 9-12-15 (the long ruler arrives) | (−6, 2) → (6, −7) = 15 |
+| 6 THUNDER STEPS | the steeper climb: 8-15-17, both ways | (−7, −1) → (8, 7) = 17 |
+| 7 HIGH MEADOW | the big drop: 12-16-20, after 5 and 10 | (−8, 3) → (8, −9) = 20 |
+| 8 GOLDEN SUMMIT | all six triples in one run | (−8, 4) → (8, −8) = 20 |
 
 ## The pathway system
 
@@ -123,10 +209,8 @@ current plan uses them: the airtime and the crashes they produce pull attention 
 the question, which is the point of the game now. `chasm` is in `NO_LAND`, so a plan that
 puts one straight after an air part gets a flat run-out inserted.
 
-Tags are not decoration: the world builder reads them. An `air` part gets a coin arc
-traced along its flight path, a `risk` part gets a gem on the far side, a `grind` part
-gets a boost at its foot, and `rest` parts with a checkpoint get a fuel can. The reward
-follows the design of the route rather than the dice.
+Tags are how parts are classified (`air`, `risk`, `grind`, `rest`, `math`); the world
+builder used to hang pickups off them, and now places nothing but the checkpoint flags.
 
 ## The slope budget
 
@@ -154,11 +238,12 @@ Two rules exist because the bot found the bug, not because anyone predicted it:
 
 ## Authoring a stage
 
-Add an entry to `CG.Stages` in [index.html](index.html):
+The stages are a dev flow now (`?stage=N`; PLAY starts the mission), kept for the bot
+and for authoring. Add an entry to `CG.Stages` in [index.html](index.html):
 
 ```js
 { id: 9, name: 'NEW CLIMB', sub: 'one line of intent', seed: 9901, d: 0.55,
-  par: 60, coins: 300, fuel: 90,
+  ruler: 21,                       // only if a gap is longer than 13
   plan: ['start', { c: [-3, -1, 4, 2] }, 'rollers',
          'CP', 'shelf', { c: [-2, 2, 3, 2] }, 'crest',
          'FINISH', 'finish'] }
@@ -169,58 +254,44 @@ Add an entry to `CG.Stages` in [index.html](index.html):
   reason to exist.
 
 - `d` (0–1) scales every part's amplitude. It is the difficulty dial.
-- `seed` fixes the stage forever: same track, same props, same coins, every replay.
-- `'CP'` marks the **next** part as a checkpoint — it should be a `shelf`.
+- `seed` fixes the stage forever: same track, same props, every replay.
+- `'CP'` marks the **next** part as a checkpoint flag — it should be a `shelf`.
 - `'FINISH'` puts the line at the start of the part after it, always the long `finish`.
 - Shape the plan like a piece of music: teach → repeat harder → checkpoint → complicate →
   checkpoint → climax → finish. Never open with the hardest thing in the stage.
 
-Then **run the bot** — do not guess `par` and `coins`:
+Then **run the bot**:
 
 ```
 node tools/stage_test.js        # all stages
 node tools/stage_test.js 9      # just this one
 ```
 
-It drives every stage with the real physics and the real game rules (three lives,
-checkpoint respawns, fuel drain, cans) and reports whether the stage is finishable at
-all, at what time, on what fuel margin, and what it collects. At every chasm the bot
-answers right first time (it pays the 1.5 s plank animation, as a player who is right
-does). It then **lays every mark on the ruler, 1 to 14, at every chasm**: the exact one
-must carry the car to the far side on its wheels, and every other one must put it in the
-pit or on its roof — run both with the game's nudges and (`note:` lines) without them, so it is always
-clear how much of the lesson is geometry and how much is script. It then suggests `par`
-and `coins`, calibrated so that:
+It drives every stage with the real physics and the real game rules (a crash puts the
+truck back on the last safe ground at no cost) and reports whether the stage is
+finishable at all, at what time, and how often it had to be put back on its wheels. At
+every chasm the bot answers right first time (it pays the 1.5 s plank animation, as a
+player who is right does). It then **lays every mark on the ruler at every chasm**: the
+exact one must carry the car to the far side on its wheels, and every other one must put
+it in the pit or on its roof — run both with the game's nudges and (`note:` lines)
+without them, so it is always clear how much of the lesson is geometry and how much is
+script.
 
-> **the bot scores exactly one star.**
-
-That is the whole calibration rule. The bot finishes, unhurried, driving the obvious
-line with no racing line and no detours. Par is 5% quicker than it manages and the coin
-goal is 5% more than it picks up, so the second and third stars cost the player something
-the bot has not got. If the bot ever scores 3, the stage has stopped asking for anything
-and the tool says so.
-
-Current state — all eight stages completable, no retries, every chasm verified, bot
-scores 1 star on each:
+Stars are the hearts still held at the line (a clean run is three), so there is nothing
+to calibrate. Current state — all eight stages completable, no respawns, every chasm
+verified:
 
 ```
-stage  name            len     time   par   coins/goal   chasms
-1      MEADOW START    252m    25.8s   25    222/235      3
-2      BLOSSOM TRAIL   287m    31.7s   30    226/235      4
-3      ORCHARD CLIMB   370m    38.9s   35    208/220      4
-4      SUNSET RIDGE    356m    36.9s   35    238/265      4
-5      WIND GAP        414m    42.9s   40    214/225      4
-6      THUNDER STEPS   430m    47.1s   45    312/330      5
-7      HIGH MEADOW     450m    48.6s   45    418/440      5
-8      GOLDEN SUMMIT   569m    61.4s   60    411/430      6
+stage  name            len    time   gaps  respawns
+1      MEADOW START    264m   30.8s    3       0
+2      BLOSSOM TRAIL   303m   37.8s    4       0
+3      ORCHARD CLIMB   380m   44.3s    4       0
+4      SUNSET RIDGE    372m   45.8s    4       0
+5      WIND GAP        430m   50.1s    4       0
+6      THUNDER STEPS   476m   58.9s    5       0
+7      HIGH MEADOW     475m   58.6s    5       0
+8      GOLDEN SUMMIT   609m   74.9s    6       0
 ```
-
-Coin totals include the +30 first-try bonus per chasm, so the third star is partly a
-maths score: miss two questions on stage 1 and you are 40 coins down on the goal.
-
-The fuel margin curve is the difficulty ramp nobody sees: 1.87× on stage 1 means fuel is
-never a thought while you are learning; 1.28× on stage 8 means two failed attempts at a
-section and you are driving on fumes.
 
 ## Endless gets chasms too
 
@@ -237,6 +308,25 @@ no elevation-trend bookkeeping needed, and the distance is automatically a whole
 same as curriculum stage 1. `dx` is drawn from a small pool early (`[3,4,5]`), widening
 after the first few chasms (`[3..10]`), never repeating the previous gap's distance.
 
+The run opens **plain**: the first gap is level, count across, on the short ruler, as it
+always was. The next six introduce the triples one per gap, smallest hypotenuse first —
+3-4-5, 6-8-10, 5-12-13 (up), 9-12-15, 8-15-17 (up), 12-16-20 — the same order the stages
+teach them in, on a fixed unjittered beat so even 12-16-20's 864 px step gets a full slot
+to climb back out.
+
+**That is the mission** (`CG.Endless.MISSION`, seven questions). Past the last far lip
+the road runs on plain for `FINISH_RUN` px (2600, a few seconds' drive, so the last
+crossing is savoured), and there stands the chequered gate: crossing it is the win —
+*YOU DID IT!* comes down over a second while the truck rolls to a stop, the hearts still
+held come up as stars, and the two ways on are PLAY AGAIN and BACK TO THE LESSON. No
+chasm is laid past the gate. The repeating order below (level, level, uphill, uphill,
+downhill, downhill, drawn from every triple: 5-12-13 or 8-15-17 up, the 3-4-5 family or
+8-15-17 down) is what a longer run would draw from, and is what `ORDER` still describes. A sloped gap leaves the road above or below the noise,
+and the exit blend back to it is stretched to `EXIT_RUN` px per px of that step. A big
+triple is only picked where the road left before the next slot can stretch it to at
+least `EXIT_MIN` (5.5), so a 12-16-20 never lands where the climb back out would be a
+wall. The first entry of each pool, the gentlest, is always allowed.
+
 The auto-brake now also plays a one-shot `'brake'` cue (`A.sfx`) the instant it takes
 over, layered on the existing continuous tyre-skid audio.
 
@@ -248,9 +338,10 @@ sane distance apart.
 
 ## What persists
 
-`localStorage` key `cg_prog`: `{ "<stage id>": { s: stars, t: best time, c: best coins } }`,
-plus the existing `cg_best`, `cg_coins`, `cg_muted`. Stars are a max, time a min, coins a
-max — replaying badly never takes anything away.
+`localStorage` key `cg_prog`: `{ "<stage id>": { s: stars, t: best time } }` (stages
+only), plus `cg_muted`. Stars are a max, time a min — replaying badly never takes
+anything away. The mission keeps nothing between runs: the first gap's nudge shows on
+every run's first gap, and the lesson on every visit's first chasm.
 
 ## Seeing it
 
@@ -259,7 +350,9 @@ drives one whole chasm — the stop, the question, the ruler opening and a mark 
 short plank (D−2) and its fall, a long plank (D+2) and its flip, the exact plank and the
 crossing, plus a portrait phone with the ruler open —
 screenshotting each beat into [docs/shots/](docs/shots/). Run it after any change to the
-chasm sequence or the renderer; the bot cannot see.
+chasm sequence or the renderer; the bot cannot see. Both shot tools open the game with
+`&lesson=0`, so the first chasm asks its question instead of opening the lesson — any
+script that drives a fresh browser to the first chasm needs the same.
 
 ## Still open
 
@@ -268,12 +361,9 @@ chasm sequence or the renderer; the bot cannot see.
   `tools/import_theme.py`). A `theme` field on the stage, picking between installed sets,
   is the next step; the loader would need per-theme asset paths and the three sky colour
   constants moved out of the renderer into the theme.
-- **Coin goals are uneven** (175 on stage 4, 675 on stage 8) because gem and star
-  placement is still chunk-random. Moving the high-value pickups onto the pathway the way
-  the coin arcs already are would make the goals legible.
-- **Sampled audio.** The slots and the sources are in [docs/AUDIO.md](docs/AUDIO.md);
-  nothing has been downloaded yet. Five new synthesised cues (`plank`, `slam`, `go`,
-  `wrong`, `brake`) want samples too.
+- **Sampled audio.** The slots and the sources are in [docs/AUDIO.md](docs/AUDIO.md).
+  The stop and the machine are recordings now; `go`, `wrong`, `heart`, `win`, `over` and
+  the pings are still synthesised.
 - **Mountain theme.** The reference art is an alpine canyon (pines, snow peaks, a river
   below). The chasm itself already renders as one — vector rock faces with strata on both
   walls, a river-blue valley floor fading up into haze, no visible pit floor — but the
@@ -282,5 +372,5 @@ chasm sequence or the renderer; the bot cannot see.
   for the seven files, in the format `tools/import_theme.py` installs.
 - **A √ ruler.** Surds are gone with the ruler; a later stage could hand out a second
   ruler graduated in √n for the same gaps.
-- **Explaining the exact answer.** After a correct plank, a one-line worked solution
-  (`√(7² + 3²) = √58`) would close the loop for the child who guessed.
+- **The way back to the lesson.** `G.LEARN_URL` is empty: set it (or pass `?learn=`)
+  wherever the game is embedded, or listen for the `climbgame:learn` message.

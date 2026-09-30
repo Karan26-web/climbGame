@@ -1,0 +1,150 @@
+/* =============================================================
+   Screen jump — self-contained.
+
+   The pill beside Next, and the list it opens. Everything is
+   namespaced under #jumpBtn / #jumpPanel, so the component can be
+   removed without touching the game.
+
+   It is quieter than both Back and Next: it is a way around the
+   lesson, not a part of it, so it must never look like the way on.
+   ============================================================= */
+
+#jumpBtn {
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 11px 18px;
+  font-family: inherit; font-size: 22px; font-weight: 400;
+  color: #8A6A38;
+  background: linear-gradient(180deg, #FFFDF5 0%, #F6EEDC 100%);
+  border: 4px solid #fff;
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: 0 6px 0 rgba(200, 160, 90, .75), 0 11px 18px rgba(0, 0, 0, .14);
+  transition: transform .12s ease, box-shadow .12s ease;
+}
+@media (hover: hover) and (pointer: fine) {
+  #jumpBtn:hover  { transform: translateY(-2px); box-shadow: 0 8px 0 rgba(200, 160, 90, .75), 0 14px 20px rgba(0, 0, 0, .18); }
+}
+#jumpBtn:active { transform: translateY(4px);  box-shadow: 0 2px 0 rgba(200, 160, 90, .75), 0 5px 10px rgba(0, 0, 0, .18); }
+#jumpBtn:focus-visible { outline: 3px solid #1F6FD0; outline-offset: 3px; }
+
+.jump-count { font-variant-numeric: tabular-nums; }
+
+/* drawn, so it can turn */
+.jump-chev {
+  width: 9px; height: 9px;
+  border-right: 3px solid #B79662;
+  border-bottom: 3px solid #B79662;
+  border-radius: 1px;
+  transform: rotate(45deg) translate(-2px, -2px);
+  transition: transform .2s ease;
+}
+#jumpBtn[aria-expanded="true"] .jump-chev {
+  transform: rotate(-135deg) translate(-3px, -3px);
+}
+
+/* ---------------- the list ---------------- */
+/* #nav owns a stacking context, so the panel is lifted with the whole
+   bar rather than on its own — a z-index inside a context cannot climb
+   out of it. */
+#nav.jumping { z-index: 60; }
+
+#jumpPanel {
+  position: absolute;
+  left: 0; top: 78px;
+  width: 720px;
+  /* The room left in the FRAME, not in the window.
+
+     This was `calc(100vw - 68px)`, which is the only viewport unit that
+     ever got inside the stage. It reads as "don't run off the screen,
+     keep the 34px #nav sits at on either side" and it is the right
+     intent measured against the wrong thing: `vw` is the real window,
+     and this panel lives in the 1920-wide design space the stage scales
+     as a whole. Below a 788px window the two stop agreeing and the
+     panel starts narrowing — measured at 700px on an iPad in portrait,
+     532px at 600, 412px at 480 — while the frame it is drawn in still
+     has 1852px of room. The design changed shape with the device, which
+     is exactly what the scaling system is there to stop.
+
+     Same intent, in the space the panel is actually in. */
+  max-width: calc(var(--stage-w) - 68px);
+  display: none;
+  flex-direction: column;
+
+  background: #FFFDF5;
+  border: 4px solid #FFC93D;
+  border-radius: 22px;
+  box-shadow: 0 10px 0 rgba(200, 150, 60, .35), 0 18px 34px rgba(60, 40, 10, .28);
+  overflow: hidden;
+}
+#jumpPanel.on { display: flex; }
+#jumpPanel * { box-sizing: border-box; }
+
+.jump-head {
+  padding: 12px 18px 10px;
+  font-family: inherit; font-size: 20px;
+  color: #9A7538;
+  background: #FFF4DC;
+  border-bottom: 2px solid #F3E2BE;
+  display: flex; align-items: baseline; justify-content: space-between; gap: 14px;
+}
+/* The version, beside the question and quieter than it. */
+.jump-ver {
+  font-family: 'Nunito', system-ui, sans-serif; font-weight: 600;
+  font-size: 14px; color: #B89A63; white-space: nowrap;
+}
+
+.jump-rows {
+  max-height: 560px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.jump-row {
+  width: 100%;
+  display: flex; align-items: baseline; gap: 14px;
+  padding: 10px 18px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid #F4EBD8;
+  cursor: pointer;
+  font-family: 'Nunito', system-ui, sans-serif;
+  font-size: 21px;
+  color: #3A4E7A;
+}
+.jump-row:last-child { border-bottom: 0; }
+@media (hover: hover) and (pointer: fine) {
+  .jump-row:hover { background: #FFF6E2; }
+}
+.jump-row:focus-visible { outline: 3px solid #1F6FD0; outline-offset: -3px; }
+
+.jump-n {
+  flex: 0 0 46px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: #C2680E;
+}
+.jump-t {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jump-tag {
+  flex: 0 0 auto;
+  padding: 2px 10px 3px;
+  border-radius: 999px;
+  font-size: 16px;
+  color: #2B6E8F;
+  background: #DDF0F8;
+  border: 1px solid #B6DDEC;
+}
+
+/* where you are now */
+.jump-row.here {
+  background: #FFF0CE;
+  box-shadow: inset 4px 0 0 #FFA726;
+}
+.jump-row.here .jump-t { font-weight: 700; }
+
+html.calm #jumpBtn, html.calm .jump-chev { transition: none; }

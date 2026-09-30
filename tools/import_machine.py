@@ -31,7 +31,7 @@ What it writes (assets/machine/ and assets/fx/):
 
 and rewrites the CG.MACHINE block in index.html (between the MACHINE:START /
 MACHINE:END markers) with every pivot and size, in machine_back pixels.
---check writes docs/machine_assembly_test.png: the parts reassembled at rest
+--check writes docs/machine_assembly_test.webp: the parts reassembled at rest
 beside the painted original, instead of trusting the numbers blind.
 """
 import os, sys, json, re
@@ -351,8 +351,8 @@ def main():
         put(lever, L[0], L[1], L[4], px=L[2], py=L[3])
         m.alpha_composite(Image.fromarray(lamp), (M['lamp'][0], M['lamp'][1] + 60))
         comp.alpha_composite(m, (0, 0))
-        comp.convert('RGB').save(os.path.join(ROOT, 'docs/machine_assembly_test.png'))
-        print('wrote docs/machine_assembly_test.png')
+        comp.convert('RGB').save(os.path.join(ROOT, 'docs/machine_assembly_test.webp'))
+        print('wrote docs/machine_assembly_test.webp')
         return 0
 
     for arr, rel in ((back, OUT + '/machine_back.webp'), (front, OUT + '/machine_front.webp'),

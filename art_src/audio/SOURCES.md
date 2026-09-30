@@ -7,6 +7,8 @@ trims, loops and levels them into `assets/audio/sfx.js`, which is what the game 
 
 | Cue | File | Source | Author | Licence |
 |---|---|---|---|---|
+| `skid` | `fs637161_kyles_car_stop_brake_skid_gravel.mp3` | [Freesound 637161](https://freesound.org/people/kyles/sounds/637161/) "auto car or van stop brake skid gravel short" | kyles | [CC0](http://creativecommons.org/publicdomain/zero/1.0/) |
+| `airbrake` | `fs705390_chungus43A_air_brake_applied.mp3` | [Freesound 705390](https://freesound.org/people/chungus43A/sounds/705390/) "Air Brake Applied" | chungus43A | [CC0](http://creativecommons.org/publicdomain/zero/1.0/) |
 | `saw_run`, `saw_cut` | `fs411222_iternetcone_makita_table_saw.mp3` | [Freesound 411222](https://freesound.org/people/iternetcone/sounds/411222/) "Small Vintage Makita Jobsite Table Saw" | iternetcone | [CC0](http://creativecommons.org/publicdomain/zero/1.0/) |
 | `poof` | `fs208111_planman_poof_of_smoke.mp3` | [Freesound 208111](https://freesound.org/people/Planman/sounds/208111/) "Poof of Smoke" | Planman | [CC0](http://creativecommons.org/publicdomain/zero/1.0/) |
 | `sink` | `fs90143_pengo_au_steam_burst.mp3` | [Freesound 90143](https://freesound.org/people/pengo_au/sounds/90143/) "steam_burst.wav" | pengo_au | [CC0](http://creativecommons.org/publicdomain/zero/1.0/) |
@@ -18,9 +20,18 @@ trims, loops and levels them into `assets/audio/sfx.js`, which is what the game 
 | `lever` | `kenney_rpg_metalLatch.ogg` | [Kenney — RPG Audio](https://kenney.nl/assets/rpg-audio) | Kenney | CC0 |
 
 The Freesound files are the site's HQ previews (128 kbps MP3) — ample for cues that are
-resampled to 24 kHz mono, and a copy of a CC0 work is as free as the original.
+resampled to 24 kHz mono and re-encoded as Ogg Opus, and a copy of a CC0 work is as free
+as the original. `break.mp3` (the tyre screech) sits here with them.
 
 ## How each was chosen
+
+- **The stop** — the tyre screech (`brake`, break.mp3) was the whole event, and it
+  is a *moving* sound: it says the truck is sliding, not that it has stopped. Two
+  layers were added from the CC0 pool: 637161, a van scrubbing to a halt on gravel
+  (0.9 s, the loudest part 0.2–0.85 s in - about the length of the auto-brake's run),
+  under the screech; and 705390, an air brake letting go (a clean "psshh" with a
+  0.3 s onset the tool trims off, capped at 1.05 s), on the instant the truck stands.
+  Of the air-brake candidates it has the cleanest onset and no engine idle under it.
 
 Candidates were found by searching Freesound with the licence filter set to Creative
 Commons 0 (sorted by downloads) and by going through Kenney's CC0 packs, then compared

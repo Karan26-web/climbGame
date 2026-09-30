@@ -35,7 +35,7 @@ const stage = process.argv[2] || '1';
   page.on('pageerror', e => console.log('PAGE ERROR', e.message));
   page.on('console', m => { if (m.type() === 'error') console.log('console.error', m.text()); });
 
-  const url = 'file://' + path.join(root, 'index.html') + '?stage=' + stage;
+  const url = 'file://' + path.join(root, 'index.html') + '?stage=' + stage + '&lesson=0';
   await page.goto(url);
   await page.waitForFunction(() => window.CG && CG.Game && CG.Game.state === 'play', null, { timeout: 20000 });
   await page.waitForTimeout(400);
@@ -64,10 +64,10 @@ const stage = process.argv[2] || '1';
 
   const q = await page.evaluate(() => {
     const g = CG.Game.gap.g;
-    return { a: g.a, b: g.b, D: g.q.D };
+    return { a: g.a, b: g.b, D: g.q.D, ruler: g.ruler };
   });
   console.log('question', JSON.stringify(q));
-  const shortI = q.D > 2 ? q.D - 2 : (q.D > 1 ? q.D - 1 : 0), longI = Math.min(q.D + 2, 14), okI = q.D;
+  const shortI = q.D > 2 ? q.D - 2 : (q.D > 1 ? q.D - 1 : 0), longI = Math.min(q.D + 2, q.ruler), okI = q.D;
 
   /* open the ruler, light a mark, confirm — what a finger does */
   async function tryAnswer(k, tag) {

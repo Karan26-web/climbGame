@@ -1,0 +1,356 @@
+/* =============================================================
+   Triangle answer panel — self-contained.
+   Everything is namespaced under .triangle-options-panel, so the
+   component can be moved or removed without touching the game.
+   ============================================================= */
+
+.triangle-options-panel {
+  position: absolute;
+  box-sizing: border-box;
+  width: 520px;
+  padding: 28px 28px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+
+  background: linear-gradient(180deg, #FFFDF2 0%, #FFF9E5 100%);
+  border: 9px solid #FFC72C;
+  border-radius: 42px;
+  box-shadow: 0 7px 0 #D78300,
+              0 13px 24px rgba(92, 56, 0, .18),
+              inset 0 3px 0 rgba(255, 255, 255, .9);
+
+  user-select: none;
+  -webkit-user-select: none;
+
+  /* Scaled by the host through --k rather than through an inline
+     transform: every animation on this panel has to carry the scale in
+     its own keyframes, and it can only do that if the value is readable
+     from CSS. An inline transform was silently overwritten by the
+     entrance below, which left the panel at full size and hanging off
+     the bottom of the frame. */
+  transform-origin: top left;
+  transform: scale(var(--k, 1));
+}
+.triangle-options-panel * { box-sizing: border-box; }
+
+/* ---------------- buttons ---------------- */
+.triangle-option {
+  position: relative;
+  width: 100%;
+  height: 108px;
+  border-radius: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+
+  font-family: 'Lilita One', 'Nunito', 'Arial Rounded MT Bold', Arial, sans-serif;
+  /* Fixed, not a vw clamp: the whole stage is transform-scaled to the
+     viewport, so a viewport-relative size would be scaled a second
+     time and come out different at every window width.
+
+     36 was set against "Right-angled Triangle", which needed 416 of
+     the 446px a button has inside it. The word "Triangle" is gone from
+     all three — every card on the screen is one — and the longest name
+     left is "Right-angled" at about half that, so the type takes the
+     room the word was holding. The panel is scaled to 0.73 on the
+     stage, so this reads at about 38px rather than 26. */
+  font-size: 52px;
+  font-weight: 400;
+  letter-spacing: -0.4px;
+  color: #FFFFFF;
+  /* White needs the face under it darkened where the letters fall, or
+     it flattens out — these colours are bright enough that white on
+     them measures worse than the navy it replaces. One soft shadow
+     does that, not the ring of hard offsets that closed up the
+     counters and made the labels read as blurred. */
+  text-shadow: 0 2px 5px rgba(8, 24, 60, .55),
+               0 1px 1px rgba(8, 24, 60, .40);
+
+  transition: transform 140ms ease, filter 140ms ease,
+              box-shadow 140ms ease, border-color 160ms ease;
+}
+
+/* the gentle highlight across the upper half */
+.triangle-option::before {
+  content: "";
+  position: absolute;
+  left: 18px; right: 18px; top: 8px;
+  height: 35%;
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .30), rgba(255, 255, 255, 0));
+  pointer-events: none;
+}
+
+/* Colour is positional — first blue, second orange, third violet — so
+   a screen can put any three answers in the panel. The triangle-type
+   names remain as aliases for the same three slots. The violet is the
+   one the distant hills are painted in, which keeps the third option
+   inside the autumn palette instead of the green it used to be. */
+.triangle-option.opt-1,
+.triangle-option.scalene {
+  background: linear-gradient(180deg, #4BD0F7 0%, #27AFEF 48%, #168BE8 100%);
+  border: 4px solid #0878DC;
+  box-shadow: 0 7px 0 #075FBD, 0 10px 15px rgba(19, 102, 176, .18),
+              inset 0 3px 0 rgba(255, 255, 255, .5);
+}
+.triangle-option.opt-2,
+.triangle-option.isosceles {
+  background: linear-gradient(180deg, #FFD956 0%, #FFB631 50%, #FF951C 100%);
+  border: 4px solid #EC850C;
+  box-shadow: 0 7px 0 #CE6800, 0 10px 15px rgba(182, 101, 0, .18),
+              inset 0 3px 0 rgba(255, 255, 255, .55);
+}
+.triangle-option.opt-3,
+.triangle-option.right-angled {
+  background: linear-gradient(180deg, #C79BF5 0%, #A874EC 50%, #8D51DF 100%);
+  border: 4px solid #7A3FCE;
+  box-shadow: 0 7px 0 #5F2FA6, 0 10px 15px rgba(78, 38, 140, .18),
+              inset 0 3px 0 rgba(255, 255, 255, .5);
+}
+
+/* ---------------- interaction ---------------- */
+@media (hover: hover) and (pointer: fine) {
+  .triangle-option:hover  { transform: translateY(-2px); filter: brightness(1.04); }
+}
+.triangle-option:active { transform: translateY(5px); }
+.triangle-option:focus  { outline: none; }
+.triangle-option:focus-visible {
+  outline: 4px solid #102D70;
+  outline-offset: 4px;
+}
+
+/* chosen, but not yet judged */
+.triangle-option.selected {
+  filter: brightness(1.06);
+  box-shadow: inset 0 0 0 4px rgba(255, 255, 255, .95),
+              0 7px 0 rgba(0, 0, 0, .22),
+              0 10px 15px rgba(0, 0, 0, .16);
+}
+
+/* ---------------- verdicts ----------------
+   The border is what carries the judgement, over whichever of the three
+   colours the slot happens to be. Green stays up: it is the answer the
+   screen goes on to work through, and the child should still be able to
+   see which one they picked while it does. Red takes itself off after
+   the shake, because there is another go coming.
+
+   The keyframes move the button and nothing else. `both` holds the last
+   frame of whatever an animation touches, so a keyframe that set the
+   shadow would freeze it there and the rules below would never show. */
+.triangle-option.correct {
+  border-color: #17A64A;
+  box-shadow: 0 0 0 5px rgba(23, 166, 74, .34),
+              0 7px 0 #0F7C36,
+              0 12px 18px rgba(14, 110, 50, .22),
+              inset 0 3px 0 rgba(255, 255, 255, .5);
+  animation: toCorrect .5s cubic-bezier(.2, .8, .25, 1) both;
+}
+/* The two nobody should pick, once the asking is over. They stay
+   readable — a child who chose one is still looking at it — but they
+   step back so the answer is the only thing lit. */
+.triangle-option.spent {
+  opacity: .45;
+  filter: saturate(.35);
+}
+.triangle-option.incorrect {
+  border-color: #E23A3A;
+  box-shadow: 0 0 0 5px rgba(226, 58, 58, .32),
+              0 7px 0 #B02A2A,
+              0 12px 18px rgba(150, 30, 30, .20),
+              inset 0 3px 0 rgba(255, 255, 255, .45);
+  animation: toIncorrect .45s ease both;
+}
+@keyframes toCorrect {
+  0%   { transform: translateY(0) scale(1); }
+  45%  { transform: translateY(-4px) scale(1.025); }
+  100% { transform: translateY(0) scale(1); }
+}
+@keyframes toIncorrect {
+  0%, 100% { transform: translateX(0); }
+  15%      { transform: translateX(-9px); }
+  40%      { transform: translateX(8px); }
+  65%      { transform: translateX(-5px); }
+  85%      { transform: translateX(3px); }
+}
+
+/* No viewport media queries here on purpose. The whole stage is one
+   fixed 1920x1080 box scaled to the window, so a rule keyed to the
+   window's width fires on a measurement that has nothing to do with
+   this panel's own size — the panel used to jump to 90vw inside a
+   1920px stage. Everything here is fixed, and --k does the fitting. */
+
+/* Coming up into the space she has just left. Short enough to be
+   settled before she lands on it. */
+.triangle-options-panel.rising {
+  animation: toRise .42s cubic-bezier(.22, .68, .3, 1) both;
+}
+@keyframes toRise {
+  0%   { opacity: 0; transform: scale(var(--k, 1)) translateY(90px); }
+  60%  { opacity: 1; transform: scale(var(--k, 1)) translateY(-8px); }
+  100% { opacity: 1; transform: scale(var(--k, 1)) translateY(0); }
+}
+html.calm .triangle-options-panel.rising { animation: none; }
+
+/* =============================================================
+   Two answers, side by side — the closing beat's pair of cafes.
+
+   Two places on a map are a pair, not a list: stacked they read as
+   first-then-second, which is an order neither of them has. The panel
+   wraps, so anything else it holds (the hint row, which asks for a
+   whole line) drops beneath them on its own.
+   ============================================================= */
+.triangle-options-panel.pair {
+  flex-flow: row wrap;
+  gap: 24px;
+  align-items: flex-start;
+}
+.triangle-options-panel.pair .triangle-option {
+  flex: 1 1 calc(50% - 12px);
+  width: auto;
+  min-width: 0;
+  /* Two words on a button half the width, so the type comes down with
+     it — "Café A" still sits on one line with room to spare. */
+  font-size: 40px;
+}
+
+/* =============================================================
+   Three cards, each carrying a drawing of itself.
+
+   A question about which sides of a triangle are equal is answered by
+   reading hash marks, so the cards that name the three answers carry
+   them: none on the scalene, a pair on the isosceles, three on the
+   equilateral. Side by side rather than stacked, because they are three
+   of one kind of thing and a column would make them a ranked list —
+   the same argument the pair layout above makes for two.
+   ============================================================= */
+.triangle-options-panel.trio {
+  flex-flow: row wrap;
+  gap: 18px;
+  align-items: stretch;
+  /* Three names side by side need three names' worth of width. At the
+     panel's stacked 520 each card had 129px inside it, which is why
+     the type was at 26 and "Equilateral" still filled its card edge to
+     edge — the type was small because the card was narrow, not because
+     the name is long. There is better than 600px of empty field
+     between this panel and the board; this takes the part of it the
+     names need and leaves the rest. */
+  width: 740px;
+}
+.triangle-options-panel.trio .triangle-option {
+  flex: 1 1 calc(33.333% - 12px);
+  width: auto;
+  min-width: 0;
+  height: auto;
+  padding: 18px 8px 16px;
+  flex-direction: column;
+  gap: 10px;
+  border-radius: 26px;
+  /* Three words across a third of the panel, and "Equilateral" is the
+     one that has to fit.
+
+     26 inside a panel scaled to 0.665 rendered at about 17px on a
+     1920 stage — the smallest type anywhere in the game, and the
+     answer being chosen. The card gives the drawing a little of its
+     height back so the name can have it: the icon is the evidence,
+     the name is the answer. */
+  font-size: 34px;
+  letter-spacing: -0.3px;
+}
+.triangle-option .opt-label { display: block; }
+/* As wide as the trio's panel (below): the two café cards (46), side
+   by side. */
+.triangle-options-panel.wide { width: 740px; }
+.triangle-option .opt-icon {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 86px;
+}
+/* Drawn in the card's own ink, so each shape belongs to its card rather
+   than to a separate diagram sitting on one. */
+.triangle-option .opt-tri {
+  fill: rgba(255, 255, 255, .30);
+  stroke: #FFFFFF;
+  stroke-width: 5;
+  stroke-linejoin: round;
+}
+.triangle-option .opt-tick {
+  stroke: #FFFFFF;
+  stroke-width: 5;
+  stroke-linecap: round;
+}
+/* A card that has given way keeps its drawing readable — the shape is
+   still the thing being talked about. */
+.triangle-option.spent .opt-tri,
+.triangle-option.spent .opt-tick { opacity: .9; }
+
+/* Their own two colours rather than the positional ones: each carries
+   the colour of its own pill on the map, so a child can pair a button
+   with a place without reading either. The names are on both — colour
+   is the second channel here, never the only one. */
+/* Yellow, not red: red is what a wrong answer flashes in this game,
+   and a button already wearing it read as one already marked wrong.
+   Its type goes dark for the same reason the pill's does. */
+.triangle-option.cafe-a {
+  background: linear-gradient(180deg, #FFE27A 0%, #F7C63A 48%, #EBAE14 100%);
+  border: 4px solid #D29A0C;
+  box-shadow: 0 7px 0 #A87808, 0 10px 15px rgba(150, 110, 10, .18),
+              inset 0 3px 0 rgba(255, 255, 255, .45);
+  color: #3A2A05;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, .45);
+}
+/* A card for a place (46): its picture, its name, and how far it
+   is, in a green box — paper rather than a coloured button, so the
+   distance written on it is the thing to read. The verdicts (the green
+   and the red border) work on it as on any answer. */
+.triangle-option.card {
+  height: auto;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px 14px 16px;
+  background: #FFFFFF;
+  border: 4px solid #B9D3F2;
+  box-shadow: 0 6px 0 #9DB8DA, 0 10px 16px rgba(40, 70, 120, .14);
+  color: #1D2744;
+  text-shadow: none;
+}
+.triangle-option.card::before { display: none; }
+.triangle-option.card .opt-pic {
+  display: block; flex: none;
+  background-repeat: no-repeat;
+}
+.triangle-option.card .opt-label { font-size: 52px; line-height: 1; }
+.triangle-option.card .opt-dist {
+  display: flex; flex-direction: column; align-items: center;
+  align-self: stretch;
+  gap: 2px;
+  padding: 12px 8px 14px;
+  border-radius: 20px;
+  background: #DDF3DF;
+  font-family: 'Nunito', system-ui, sans-serif;
+  font-weight: 700;
+  color: #1E4630;
+}
+.triangle-option.card .opt-dist-k { font-size: 32px; line-height: 1.1; }
+.triangle-option.card .opt-dist-v { font-size: 44px; line-height: 1.15; white-space: nowrap; }
+/* The verdicts again, after the card's own border: the same weight and
+   later, or the card's border would be the one that shows. */
+.triangle-option.card.correct {
+  border-color: #17A64A;
+  box-shadow: 0 0 0 5px rgba(23, 166, 74, .34), 0 6px 0 #0F7C36,
+              0 10px 16px rgba(14, 110, 50, .2);
+}
+.triangle-option.card.incorrect {
+  border-color: #E23A3A;
+  box-shadow: 0 0 0 5px rgba(226, 58, 58, .32), 0 6px 0 #B02A2A,
+              0 10px 16px rgba(150, 30, 30, .2);
+}
+.triangle-option.cafe-b {
+  background: linear-gradient(180deg, #4FC2DE 0%, #2AA2C4 48%, #1786A8 100%);
+  border: 4px solid #12708E;
+  box-shadow: 0 7px 0 #0E5A73, 0 10px 15px rgba(20, 110, 140, .18),
+              inset 0 3px 0 rgba(255, 255, 255, .35);
+}
+
