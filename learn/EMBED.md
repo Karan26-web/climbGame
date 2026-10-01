@@ -20,7 +20,11 @@ them across (or upstream them) on the next re-sync:
    `{ type: 'distance-formula:ready' }` to the parent on load and
    `{ type: 'distance-formula:complete' }` on `lesson:end`. Adds `html.embedded` for any
    styling an embed might want. Target origin `*`, because the game may be opened from a
-   file.
+   file. It also takes every control out of the embed: the screen picker is switched off
+   (`CFG.NAV.jump = false`, set before the game boots) and the nav bar (Back, Next), the
+   corner Next and the picker's panel are hidden by an injected style. The screens hand
+   over by themselves (`CFG.AUTO`), so inside the game the lesson simply plays through -
+   a tap on the scene still moves on early. Standalone, everything stays.
 3. **`index.html`** — loads `js/embed.js` after `js/game.js`.
 
 Nothing else is touched: the start screen, Play, the picker beside Next and every screen
@@ -37,5 +41,5 @@ rsync -a --delete --exclude .git --exclude .attic --exclude docs --exclude tools
 ```
 
 then re-apply edit 1 and edit 3 (edit 2 is excluded from the sync and survives), and run
-the game's lesson check: drive to the first chasm with `?stage=1&lesson=1`, press Next
-through the lesson, and see the question return.
+the game's lesson check: drive to the first chasm with `?stage=1&lesson=1`, let the
+lesson play through (or tap the scene to move on early), and see the question return.

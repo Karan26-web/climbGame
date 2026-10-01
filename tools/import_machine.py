@@ -3,7 +3,7 @@
 
     python3 tools/import_machine.py [--check]
 
-Source: art_src/machine/machineParts.png, one 1536x1024 sheet holding
+Source: art_src/machine/machineParts.webp, one 1536x1024 sheet holding
   row 1   the finished machine (reference only) and the SAME machine with its
           moving parts taken out - the saw blade, the side cog, the lever stick
           and the conveyor rollers - leaving a dark cavity, a socket, a boss
@@ -40,13 +40,13 @@ from PIL import Image
 from scipy import ndimage
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from import_car import fix_alpha
+from import_theme import fix_alpha      # the one alpha clean-up, shared with the theme installer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC = 'art_src/machine/machineParts.png'
+SRC = 'art_src/machine/machineParts.webp'
 OUT = 'assets/machine'
 
-# ---- where things are in machineParts.png (atlas px), measured once ----
+# ---- where things are in machineParts.webp (atlas px), measured once ----
 MASTER = (20, 0, 760, 400)            # the finished machine, for --check only
 BACK = (790, 40, 1525, 400)           # the machine with its moving parts out
 BLADE_HUB = (1161.8, 213.4)           # axle stub in the cavity = blade hub in MASTER + 766

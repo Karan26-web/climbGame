@@ -93,6 +93,20 @@ tap, Enter or the line's own time moves it on):
 3. *Let's explore how to find that on a coordinate plane!* — the plane comes up behind
    them.
 
+Each line is **spoken**: one recording per language, read in this order
+(`art_src/audio/vo_<lang>_intro.opus`), cut by `tools/import_vo.py` into one clip per line
+and shipped embedded in `assets/audio/vo.js` (the same base64 Ogg Opus as the effects,
+because `file://` refuses fetch), keyed by language and the line's i18n key. The line
+holds for as long as its voice runs plus a breath, so the words are paced by the
+speaker, not a timer; the first waits a beat for the arrival chime. The voice sits on
+its own bus beside the game's bed (engine, tyres, effects), which dips to a third while
+she speaks and comes back after. A tap moves on and fades the voice out in 60 ms rather
+than cutting it. A language with no recording yet (Hindi) shows its words for the
+written time instead - nothing breaks, it is just quiet. Recording a language: read
+the three lines in order with a clear pause between them, drop the file in
+`art_src/audio/`, run the tool with `--scan` to find the cuts, write them into `CUTS`,
+re-run.
+
 Then the lesson fades up over the whole screen (an `<iframe>` on `learn/index.html?embed=1`,
 fetched unseen under the three lines so it is ready when they end; the game's sound
 ducks under it). Swifty's 62 screens end on *Let's head back and bridge that gap!*, the

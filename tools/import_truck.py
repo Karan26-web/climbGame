@@ -5,8 +5,8 @@
 
 The renderer draws the wheels BEHIND the body, each at its own sprung axle, so
 the body sprite must have open arches and no tyres. The truck was painted as
-one finished picture with its tyres on (art_src/truck/truck.png), and the parts
-sheet beside it (art_src/truck/truck_parts.png) has the same tyre on its own.
+one finished picture with its tyres on (art_src/truck/truck.webp), and the parts
+sheet beside it (art_src/truck/truck_parts.webp) has the same tyre on its own.
 This tool turns the two into what the renderer wants:
 
   1. BODY  - the painted springs are cut out (the renderer draws live ones
@@ -15,7 +15,7 @@ This tool turns the two into what the renderer wants:
              crescent is cut too, but only where it is tyre-dark, so the silver
              bull bar and the blue fenders it overlaps survive. Whatever is
              left detached (outline slivers of the tyres) is dropped. The
-             canvas is kept, so every number below is a raw truck.png pixel.
+             canvas is kept, so every number below is a raw truck.webp pixel.
   2. WHEEL - the tyre from the parts sheet, cut on a circle about its hub and
              stretched round. The painted tyre is 5% wider than tall; spun
              as-is it would visibly wobble on its axle.
@@ -36,16 +36,16 @@ from PIL import Image
 from scipy import ndimage
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from import_car import fix_alpha
+from import_theme import fix_alpha      # the one alpha clean-up, shared with the theme installer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC_BODY = 'art_src/truck/truck.png'
-SRC_PARTS = 'art_src/truck/truck_parts.png'
+SRC_BODY = 'art_src/truck/truck.webp'
+SRC_PARTS = 'art_src/truck/truck_parts.webp'
 DEST_BODY = 'assets/vehicle/truck_body.webp'
 DEST_WHEEL = 'assets/vehicle/truck_wheel.webp'
 DEST_WELL = 'assets/vehicle/truck_well.webp'
 
-# measured in truck.png: hub centres (the bright hubcaps) and the tyre radius
+# measured in truck.webp: hub centres (the bright hubcaps) and the tyre radius
 # (tread tip to hub, the mean of left/bottom extents)
 HUBS = [(244.0, 862.0), (882.5, 862.0)]
 TYRE_R = 210
@@ -61,7 +61,7 @@ SPRINGS = [(266, 354), (810, 900)]
 FENDER_INK = 10         # the fender's outline, below its lowest blue pixel
 WELL_TOP, WELL_BOT = (36, 31, 38), (13, 11, 15)   # sampled off the arch interior
 
-# in truck_parts.png: the left-hand tyre's opaque box
+# in truck_parts.webp: the left-hand tyre's opaque box
 WHEEL_BOX = (35, 498, 384, 829)
 WHEEL_OUT = 360         # output sprite is square, hub at its centre
 

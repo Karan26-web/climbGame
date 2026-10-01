@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Install a delivered theme pack into assets/, repairing and verifying it first.
 
-    python3 tools/import_theme.py <png_masters_dir> [--theme NAME] [--dry-run]
+    python3 tools/import_theme.py <masters_dir> [--theme NAME] [--dry-run]
 
 With --theme NAME the pack is installed as a SEASON under assets/themes/NAME/
 (summer, autumn, winter — the engine cycles through whichever of these exist)
 instead of replacing the built-in spring set in assets/background + terrain.
-A night_sky.png in the masters dir, if present, is installed as the shared
+A night_sky.webp in the masters dir, if present, is installed as the shared
 assets/themes/night_sky.webp: opaque, 1774x887, tiling left/right.
 
-Art arrives from an image model as PNG masters. Three things always have to
+Art arrives from an image model as PNG masters, kept here as lossless WebP (pixel for pixel the same, a third the size). Three things always have to
 happen before it can be trusted in the engine, and doing them by hand is how a
 seam or a half-transparent edge ships:
 
@@ -186,12 +186,12 @@ def main():
     if theme:
         contract = {k: (theme_dest(v[0], theme), v[1], v[2]) for k, v in contract.items()}
     for k, v in EXTRAS.items():
-        if os.path.exists(os.path.join(src, k + '.png')):
+        if os.path.exists(os.path.join(src, k + '.webp')):
             contract[k] = v
 
     report, failed = {}, []
     for name, (dest, size, top) in contract.items():
-        path = os.path.join(src, name + '.png')
+        path = os.path.join(src, name + '.webp')
         if not os.path.exists(path):
             failed.append(f'{name}: missing {path}')
             continue
@@ -256,7 +256,7 @@ def main():
 
     # the flat colour at the very top of the sky is what the engine fills the
     # gap above the sky layer with — it must match exactly or a climb shows a band
-    skyp = os.path.join(src, 'sky.png')
+    skyp = os.path.join(src, 'sky.webp')
     if os.path.exists(skyp):
         s = np.array(Image.open(skyp).convert('RGB')).astype(int)
         row0 = s[0].mean(0).round().astype(int)

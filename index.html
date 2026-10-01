@@ -53,7 +53,7 @@
 </head>
 <body>
 <canvas id="c"></canvas>
-<iframe id="lesson" title="Distance formula lesson" allow="autoplay"></iframe>
+<iframe id="lesson" aria-label="Distance formula lesson" allow="autoplay"></iframe>
 <div id="boot">
   <h1><span>CLIFF</span><span>CROSS</span></h1>
   <div id="bar"><div id="fill"></div></div>
@@ -61,6 +61,8 @@
 </div>
 <!-- the recorded sound effects (tools/import_sfx.py) - a script, because file:// refuses fetch() -->
 <script src="assets/audio/sfx.js"></script>
+<!-- the spoken lines of the road explained, per language (tools/import_vo.py) -->
+<script src="assets/audio/vo.js"></script>
 <!-- every word on screen, in each language (tools/build_i18n.js wraps i18n/strings.json) -->
 <script src="i18n/strings.js"></script>
 <script>
@@ -73,7 +75,8 @@
                     testable: tools/sim_test.js extracts this block verbatim
                     and runs it under Node, so it must not touch the DOM)
      ASSETS         image loading
-     AUDIO          WebAudio engine/tyre synthesis, sampled one-shots (sfx.js)
+     AUDIO          WebAudio engine/tyre synthesis, sampled one-shots (sfx.js),
+                    the recorded voice lines (vo.js)
      WORLD          deterministic chunked props, particles
      RENDER         parallax, terrain ribbon, vehicle assembly, HUD
      GAME           loop, camera, input, screens
@@ -1472,7 +1475,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       lf = document.getElementById('lesson');
   if (h1 && h1.children.length > 1) { h1.children[0].textContent = T('title.word1'); h1.children[1].textContent = T('title.word2'); }
   if (bm) bm.textContent = T('boot.loading');
-  if (lf) lf.title = T('lesson.title');
+  if (lf) lf.setAttribute('aria-label', T('lesson.title'));   // a name, not a tooltip over the lesson
   document.title = T('title.page');
 })(CG);
 
@@ -1636,9 +1639,20 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     var AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return;
     var ctx = A.ctx = new AC();
+    /* out: the one place the mute and the duck act. Under it the game's
+       bed (master: engine, tyres, effects, music) and, beside it, the
+       voice - so a spoken line sits over the idling engine, which dips
+       while it speaks (A.say), and nothing a line says is lost under
+       the game. */
+    A.out = ctx.createGain();
+    A.out.gain.value = A.muted || A.ducked ? 0 : 1;
+    A.out.connect(ctx.destination);
     A.master = ctx.createGain();
-    A.master.gain.value = A.muted || A.ducked ? 0 : 0.9;
-    A.master.connect(ctx.destination);
+    A.master.gain.value = BED;
+    A.master.connect(A.out);
+    A.voiceGain = ctx.createGain();
+    A.voiceGain.gain.value = VOICE;
+    A.voiceGain.connect(A.out);
 
     /* --- engine ------------------------------------------------------- */
     var eg = ctx.createGain(); eg.gain.value = 0;
@@ -1672,6 +1686,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     A.ready = true;
     A.loadPack();
     A.loadEmbedded();
+    A.loadVoice();
   };
 
   /* ------------------------------------------------------------ embedded
@@ -1692,6 +1707,74 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       var pr = A.ctx.decodeAudioData(bytes.buffer, done, function () {});
       if (pr && pr.catch) pr.catch(function () {});
     });
+  };
+
+  /* ------------------------------------------------------------ the voice
+     The spoken lines of the road explained: one recording per language,
+     cut by tools/import_vo.py into assets/audio/vo.js as
+     CG_VO[lang][i18n key] = [seconds, base64 Ogg Opus] - embedded for the
+     same reason as sfx.js. Decoded once with the effects; a clip the
+     table lacks (every Hindi line, until it is recorded) is no voice,
+     and the line shows its words for its written time instead. */
+  var BED = 0.9, VOICE = 0.95, BED_UNDER_VOICE = 0.3, HUSH = 0.06;
+  var VO = window.CG_VO || {};
+  A.voice = {};                        // 'lang:key' -> AudioBuffer
+  A.loadVoice = function () {
+    Object.keys(VO).forEach(function (lang) {
+      Object.keys(VO[lang] || {}).forEach(function (key) {
+        var e = VO[lang][key];
+        if (!e || !e[1]) return;
+        var bin = atob(e[1]), bytes = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        var done = function (b) { A.voice[lang + ':' + key] = b; };
+        var pr = A.ctx.decodeAudioData(bytes.buffer, done, function () {});
+        if (pr && pr.catch) pr.catch(function () {});
+      });
+    });
+  };
+  /* Is there a recording of this line in the current language? Answered
+     without the audio context, so a screen can pace itself before sound
+     has started. */
+  A.hasVoice = function (key) {
+    var lang = CG.i18n.lang, e = VO[lang] && VO[lang][key];
+    return e ? e[0] : 0;
+  };
+  /* Say a line: the clip for the current language and i18n key, after
+     `delay` seconds, over the bed dipped to BED_UNDER_VOICE for as long as
+     it runs. One line at a time - a new one hushes the last. Returns how
+     long it speaks for (delay included), or 0 when there is nothing to
+     say (no clip, no audio, muted): the caller paces the words on that. */
+  A.say = function (key, delay) {
+    A.hush();
+    if (!A.ready || A.muted) return 0;
+    var b = A.voice[CG.i18n.lang + ':' + key], secs = A.hasVoice(key);
+    if (!b) return 0;
+    delay = delay || 0;
+    var ctx = A.ctx, t = ctx.currentTime + delay;
+    var src = ctx.createBufferSource(), g = ctx.createGain();
+    src.buffer = b;
+    g.gain.value = 1;
+    src.connect(g); g.connect(A.voiceGain);
+    src.start(t);
+    A.master.gain.cancelScheduledValues(ctx.currentTime);
+    A.master.gain.setTargetAtTime(BED_UNDER_VOICE, ctx.currentTime, 0.08);
+    A.master.gain.setTargetAtTime(BED, t + b.duration, 0.25);
+    var line = A.speaking = { src: src, gain: g };
+    src.onended = function () { if (A.speaking === line) A.speaking = null; };
+    return delay + (secs || b.duration);
+  };
+  /* Stop the line being said, if any - a short fade, never a cut - and
+     bring the bed back. */
+  A.hush = function () {
+    var line = A.speaking;
+    if (!line) return;
+    A.speaking = null;
+    var ctx = A.ctx, t = ctx.currentTime;
+    line.gain.gain.setValueAtTime(line.gain.gain.value, t);
+    line.gain.gain.linearRampToValueAtTime(0, t + HUSH);
+    try { line.src.stop(t + HUSH); } catch (e) {}
+    A.master.gain.cancelScheduledValues(t);
+    A.master.gain.setTargetAtTime(BED, t, 0.2);
   };
 
   /* The brake screech is ONE voice: hard braking re-asserts it rather than
@@ -1848,13 +1931,13 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
 
   A.setMuted = function (m) {
     A.muted = m;
-    if (A.master) A.master.gain.value = m || A.ducked ? 0 : 0.9;
+    if (A.out) A.out.gain.value = m || A.ducked ? 0 : 1;
   };
   /* the game's sound under an overlay (the lesson): out, and back to
      whatever the mute says */
   A.duck = function (on) {
     A.ducked = !!on;
-    if (A.master) A.master.gain.value = A.muted || A.ducked ? 0 : 0.9;
+    if (A.out) A.out.gain.value = A.muted || A.ducked ? 0 : 1;
   };
 
   /* Continuous engine + tyre state, called every frame. */
@@ -4628,7 +4711,13 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
      screens opens the same overlay; finished from there, a fresh run
      starts. A lesson that never says it is up (the folder missing, say) is
      put away after LESSON_WAIT seconds and the road carries on without it.
-     An external lesson instead: set LEARN_URL, or pass ?learn=<url>. */
+     An external lesson instead: set LEARN_URL, or pass ?learn=<url>.
+
+     A build WITHOUT the lesson (the game on its own): leave out the
+     <iframe id="lesson"> and the learn/ folder. The road is still explained
+     in its three lines, then the question is asked straight away, and the
+     end screens offer no way back to a lesson that is not there
+     (G.hasLesson). */
   /* the lesson is told the game's language too, for when it learns to speak it */
   function lessonUrl() { return 'learn/index.html?embed=1&lan=' + encodeURIComponent(CG.i18n.lang); }
   var LESSON_WAIT = 12;
@@ -4637,6 +4726,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   G.LEARN_URL = '';
 
   function lessonWanted() { return G.lesson.force || (!G.lesson.done && !G.lesson.off); }
+  /* is there a lesson in this build at all - the frame on the page, or an external one? */
+  G.hasLesson = function () { return !!(G.learnUrl || G.LEARN_URL || document.getElementById('lesson')); };
 
   function lessonFrame() {
     var L = G.lesson, f;
@@ -4792,6 +4883,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   /* ---------------------------------------------------------------- run */
   function beginRun(x) {
     FX.reset();
+    A.hush();
     CG.Terrain.setPlanks([]);
     G.gap = null; G.firstTry = 0; G.crossed = 0;
     G.gapCount = G.track ? G.track.chasms.length : (G.mode === 'endless' ? CG.Endless.MISSION : 0);
@@ -4855,6 +4947,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     CG.World.init(G.seed, null);
     CG.Env.reset(G.seed);
     FX.reset();
+    A.hush();
     CG.Terrain.setPlanks([]);
     G.gap = null;
     G.v = new CG.Vehicle(CG.Terrain);
@@ -5346,19 +5439,26 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   }
 
   /* THE ROAD EXPLAINED - once, at the first chasm, before the lesson: three
-     lines, each with the thing it names lit. The broken road is outlined
-     and badged for the first; the two ends land (with the dashed span
-     between them) for the second; the plane comes up for the third. Each
-     holds for its `t` seconds or until a tap, then the lesson opens. */
+     lines, spoken (A.say - the recording in assets/audio/vo.js, in the
+     language of the words) and each with the thing it names lit. The
+     broken road is outlined and badged for the first; the two ends land
+     (with the dashed span between them) for the second; the plane comes up
+     for the third. Each holds while its voice speaks and a breath after
+     (q.hold) - or, with no recording in this language, for its `t`
+     seconds - or until a tap, which hushes the voice; then the lesson
+     opens. */
   var INTRO = [                            // the words: intro.line1..3 in i18n/strings.json
     { t: 3.8, key: 'intro.line1' },
     { t: 5.4, key: 'intro.line2' },
     { t: 4.4, key: 'intro.line3' }
   ];
   var INTRO_LEAD = 0.7, INTRO_IN = 0.35, INTRO_OUT = 0.3, INTRO_MIN = 0.9;
+  var INTRO_BREATH = 0.6;                  // the words stay this long after the voice
+  var INTRO_CHIME = 0.25;                  // the first line's voice waits for the chime
 
   function introStart(q) {
-    q.phase = 'intro'; q.t = 0; q.step = 0; q.stepT = -INTRO_LEAD; q.said = false;
+    q.phase = 'intro'; q.t = 0; q.step = 0; q.stepT = -INTRO_LEAD; q.spoke = -1;
+    q.hold = INTRO[0].t;
     q.ringK = 0; q.roadK = 0;
     loadLesson();                          // fetched under the three lines
   }
@@ -5369,9 +5469,21 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
     if (!q || q.phase !== 'intro' || q.stepT < INTRO_MIN) return;
     q.step++; q.stepT = 0;
     if (q.step >= INTRO.length) {
+      A.hush();
       q.phase = 'lesson'; q.t = 0;
       showLesson(lessonOver);
-    } else A.sfx('click');
+    } else { A.hush(); A.sfx('click'); }
+  }
+
+  /* the line's words have arrived: say them, and hold for as long as that
+     takes (plus a breath) - or for the written time when there is no
+     voice to pace them */
+  function introSpeak(q, s) {
+    q.spoke = s;
+    var delay = 0;
+    if (s === 0) { A.sfx('check'); delay = INTRO_CHIME; }
+    var said = A.say(INTRO[s].key, delay);
+    q.hold = said ? said + INTRO_BREATH : INTRO[s].t;
   }
 
   /* back from the lesson: the question, built from nothing as it always is
@@ -5388,8 +5500,8 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
   function introControl(q, dt) {
     var s = q.step;
     q.stepT += dt;
-    if (!q.said && q.stepT >= 0) { q.said = true; A.sfx('check'); }
-    if (q.stepT >= INTRO[s].t) { introAdvance(); if (q.phase !== 'intro') return; s = q.step; }
+    if (q.spoke !== s && q.stepT >= 0) introSpeak(q, s);
+    if (q.stepT >= q.hold) { introAdvance(); if (q.phase !== 'intro') return; s = q.step; }
     var pulse = 0.5 + 0.5 * Math.sin(G.clock * 4.5);
     /* what each line points at: the hole, then the ends, then the plane */
     var inA = s > 1 ? 1 : s === 1 ? CG.clamp(q.stepT / 0.45, 0, 1) : 0;
@@ -6370,7 +6482,7 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       return;
     }
     var s = q.step, b = INTRO[s];
-    var k = Math.min(CG.clamp(q.stepT / INTRO_IN, 0, 1), CG.clamp((b.t - q.stepT) / INTRO_OUT, 0, 1));
+    var k = Math.min(CG.clamp(q.stepT / INTRO_IN, 0, 1), CG.clamp((q.hold - q.stepT) / INTRO_OUT, 0, 1));
     if (k <= 0.01) return;
     k = k * k * (3 - 2 * k);
     /* the plate (R.plate): the words sit in its cream, between the screws
@@ -6792,8 +6904,10 @@ CG.fmt = function (n, d) { return n.toFixed(d === undefined ? 0 : d); };
       bigButton('map', W / 2, y2 + bh + 22 * u, 220 * u, 56 * u, T('win.stageMap'), 'blue', 'iconHome');
     } else {
       bigButton('retry', W / 2, y2, 340 * u, bh, T('win.playAgain'), 'green', 'iconRestart', T('win.playAgainSub'), true);
-      bigButton('learn', W / 2, y2 + bh + 26 * u, 340 * u, bh, T('win.lesson'), 'blue', 'iconHome',
-                T('win.lessonSub'));
+      if (G.hasLesson()) {
+        bigButton('learn', W / 2, y2 + bh + 26 * u, 340 * u, bh, T('win.lesson'), 'blue', 'iconHome',
+                  T('win.lessonSub'));
+      }
     }
     c.restore();
   }

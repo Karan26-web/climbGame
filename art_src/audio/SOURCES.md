@@ -7,21 +7,21 @@ trims, loops and levels them into `assets/audio/sfx.js`, which is what the game 
 
 | Cue | File | Source | Author | Licence |
 |---|---|---|---|---|
-| `skid` | `fs637161_kyles_car_stop_brake_skid_gravel.mp3` | [Freesound 637161](https://freesound.org/people/kyles/sounds/637161/) "auto car or van stop brake skid gravel short" | kyles | [CC0](http://creativecommons.org/publicdomain/zero/1.0/) |
-| `airbrake` | `fs705390_chungus43A_air_brake_applied.mp3` | [Freesound 705390](https://freesound.org/people/chungus43A/sounds/705390/) "Air Brake Applied" | chungus43A | [CC0](http://creativecommons.org/publicdomain/zero/1.0/) |
-| `saw_run`, `saw_cut` | `fs411222_iternetcone_makita_table_saw.mp3` | [Freesound 411222](https://freesound.org/people/iternetcone/sounds/411222/) "Small Vintage Makita Jobsite Table Saw" | iternetcone | [CC0](http://creativecommons.org/publicdomain/zero/1.0/) |
-| `poof` | `fs208111_planman_poof_of_smoke.mp3` | [Freesound 208111](https://freesound.org/people/Planman/sounds/208111/) "Poof of Smoke" | Planman | [CC0](http://creativecommons.org/publicdomain/zero/1.0/) |
-| `sink` | `fs90143_pengo_au_steam_burst.mp3` | [Freesound 90143](https://freesound.org/people/pengo_au/sounds/90143/) "steam_burst.wav" | pengo_au | [CC0](http://creativecommons.org/publicdomain/zero/1.0/) |
-| `slam` | `kenney_impactPlank_medium_001.ogg` | [Kenney — Impact Sounds](https://kenney.nl/assets/impact-sounds) | Kenney | CC0 (`kenney_LICENSE.txt`) |
-| `tick` | `kenney_impactMetal_light_001.ogg` | [Kenney — Impact Sounds](https://kenney.nl/assets/impact-sounds) | Kenney | CC0 |
-| `plank` | `kenney_impactWood_light_002.ogg` | [Kenney — Impact Sounds](https://kenney.nl/assets/impact-sounds) | Kenney | CC0 |
-| `bump` | `kenney_impactMetal_medium_001.ogg` | [Kenney — Impact Sounds](https://kenney.nl/assets/impact-sounds) | Kenney | CC0 |
-| `chop` | `kenney_rpg_chop.ogg` | [Kenney — RPG Audio](https://kenney.nl/assets/rpg-audio) | Kenney | CC0 |
-| `lever` | `kenney_rpg_metalLatch.ogg` | [Kenney — RPG Audio](https://kenney.nl/assets/rpg-audio) | Kenney | CC0 |
+| `skid` | `fs637161_kyles_car_stop_brake_skid_gravel.opus` | [Freesound 637161](https://freesound.org/people/kyles/sounds/637161/) "auto car or van stop brake skid gravel short" | kyles | [CC0](http://creativecommons.org/publicdomain/zero/1.0/) |
+| `airbrake` | `fs705390_chungus43A_air_brake_applied.opus` | [Freesound 705390](https://freesound.org/people/chungus43A/sounds/705390/) "Air Brake Applied" | chungus43A | [CC0](http://creativecommons.org/publicdomain/zero/1.0/) |
+| `saw_run`, `saw_cut` | `fs411222_iternetcone_makita_table_saw.opus` | [Freesound 411222](https://freesound.org/people/iternetcone/sounds/411222/) "Small Vintage Makita Jobsite Table Saw" | iternetcone | [CC0](http://creativecommons.org/publicdomain/zero/1.0/) |
+| `poof` | `fs208111_planman_poof_of_smoke.opus` | [Freesound 208111](https://freesound.org/people/Planman/sounds/208111/) "Poof of Smoke" | Planman | [CC0](http://creativecommons.org/publicdomain/zero/1.0/) |
+| `sink` | `fs90143_pengo_au_steam_burst.opus` | [Freesound 90143](https://freesound.org/people/pengo_au/sounds/90143/) "steam_burst.wav" | pengo_au | [CC0](http://creativecommons.org/publicdomain/zero/1.0/) |
+| `slam` | `kenney_impactPlank_medium_001.opus` | [Kenney — Impact Sounds](https://kenney.nl/assets/impact-sounds) | Kenney | CC0 (`kenney_LICENSE.txt`) |
+| `tick` | `kenney_impactMetal_light_001.opus` | [Kenney — Impact Sounds](https://kenney.nl/assets/impact-sounds) | Kenney | CC0 |
+| `plank` | `kenney_impactWood_light_002.opus` | [Kenney — Impact Sounds](https://kenney.nl/assets/impact-sounds) | Kenney | CC0 |
+| `bump` | `kenney_impactMetal_medium_001.opus` | [Kenney — Impact Sounds](https://kenney.nl/assets/impact-sounds) | Kenney | CC0 |
+| `chop` | `kenney_rpg_chop.opus` | [Kenney — RPG Audio](https://kenney.nl/assets/rpg-audio) | Kenney | CC0 |
+| `lever` | `kenney_rpg_metalLatch.opus` | [Kenney — RPG Audio](https://kenney.nl/assets/rpg-audio) | Kenney | CC0 |
 
 The Freesound files are the site's HQ previews (128 kbps MP3) — ample for cues that are
 resampled to 24 kHz mono and re-encoded as Ogg Opus, and a copy of a CC0 work is as free
-as the original. `break.mp3` (the tyre screech) sits here with them.
+as the original. `break.opus` (the tyre screech) sits here with them.
 
 ## How each was chosen
 
@@ -50,3 +50,16 @@ on spectrograms and measured pitch, loudness and decay:
   with the clearest pitch (2.34 kHz), short enough (0.10 s decay) to fire every 0.17 s
   as a counter; the latch for the lever because it is the crispest (it has to read over
   the motor winding up).
+
+## Voice
+
+The spoken lines of the road explained (the three lines before the lesson - `intro.line1..3`
+in `i18n/strings.json`). One recording per language, read in the order the game says
+them; `tools/import_vo.py` cuts it into one clip per line and embeds them in
+`assets/audio/vo.js`. Recorded for the project, not from a library.
+
+| Language | File | Lines | Speaker |
+|---|---|---|---|
+| `en` | `vo_en_intro.opus` | 1-3, 10.8 s, mono (recorded as 44.1 kHz MP3 128 kbps) | Karan (project recording) |
+
+Hindi is not yet recorded: the game shows those lines for their written time, silently.

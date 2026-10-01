@@ -10,20 +10,21 @@ base64 Ogg Opus file (mono, OPUS_KBPS), into one generated script:
 
     assets/audio/sfx.js      window.CG_SFX = { name: '<base64 ogg opus>', ... }
 
-The encoder is libopus through PyAV (`python3 -m pip install --user av`;
-there is no ffmpeg on this machine). Opus keeps the exact sample count
-through a decode (pre-skip and end trimming are in the Ogg headers), which
-is what lets the two saw loops stay seamless.
+The encoder - and the decoder, since the sources are Ogg Opus, which
+macOS's afconvert cannot read - is libopus through PyAV (`python3 -m pip
+install --user av`; there is no ffmpeg on this machine). Opus keeps the
+exact sample count through a decode (pre-skip and end trimming are in the
+Ogg headers), which is what lets the two saw loops stay seamless.
 
 which index.html includes ahead of the game and decodes once audio starts
 (A.loadEmbedded). Any cue missing from it - or the whole file - falls back
 to the synthesised version, so the game never goes silent.
 
-Recordings arrive with dead air in front of them (break.mp3 has 2.2 s of room
+Recordings arrive with dead air in front of them (break.opus has 2.2 s of room
 hiss before the screech), which would land the sound seconds after the event
 it belongs to. For each ONE-SHOT this tool:
 
-  1. DECODES it to mono PCM at RATE (macOS afconvert - no ffmpeg needed)
+  1. DECODES it to mono PCM at RATE (PyAV; the sources are Ogg Opus)
   2. FINDS the sound: a noise floor (see FLOOR below), the onset the first
      10 ms window ONSET_DB above it, the tail the last window TAIL_DB above
      it. Pre-roll/post-roll keep the attack and the ring-out; `max` caps how
@@ -41,32 +42,32 @@ rather than by peak - the saw's two loops (motor, cut) have to match.
 --check prints what it found and writes every processed clip to a temp dir
 for listening, without touching sfx.js. Sources and licences: art_src/audio/SOURCES.md.
 """
-import base64, io, math, os, subprocess, sys, tempfile
+import base64, io, math, os, sys, tempfile
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, 'assets', 'audio', 'sfx.js')
 
 A = 'art_src/audio/'
-SAW = A + 'fs411222_iternetcone_makita_table_saw.mp3'
+SAW = A + 'fs411222_iternetcone_makita_table_saw.opus'
 # name -> (source recording, options)
 CLIPS = {
-    'brake':   (A + 'break.mp3', {'floor': 'median'}),
+    'brake':   (A + 'break.opus', {'floor': 'median'}),
     # the stop at a chasm, layered on the screech: the tyres scrubbing to a
     # halt on the gravel, then the air brakes letting go once it is stood
-    'skid':    (A + 'fs637161_kyles_car_stop_brake_skid_gravel.mp3', {}),
-    'airbrake': (A + 'fs705390_chungus43A_air_brake_applied.mp3', {'max': 1.05}),
+    'skid':    (A + 'fs637161_kyles_car_stop_brake_skid_gravel.opus', {}),
+    'airbrake': (A + 'fs705390_chungus43A_air_brake_applied.opus', {'max': 1.05}),
     # the plank machine
     'saw_run': (SAW, {'loop': (5.0, 6.0)}),      # the motor at speed, no load
     'saw_cut': (SAW, {'loop': (3.2, 4.2)}),      # the blade in the wood
-    'lever':   (A + 'kenney_rpg_metalLatch.ogg', {}),
-    'tick':    (A + 'kenney_impactMetal_light_001.ogg', {}),
-    'chop':    (A + 'kenney_rpg_chop.ogg', {}),
-    'plank':   (A + 'kenney_impactWood_light_002.ogg', {}),   # off the end of the belt
-    'slam':    (A + 'kenney_impactPlank_medium_001.ogg', {}),
-    'poof':    (A + 'fs208111_planman_poof_of_smoke.mp3', {'max': 0.8}),
-    'sink':    (A + 'fs90143_pengo_au_steam_burst.mp3', {'max': 0.9}),
-    'bump':    (A + 'kenney_impactMetal_medium_001.ogg', {}),
+    'lever':   (A + 'kenney_rpg_metalLatch.opus', {}),
+    'tick':    (A + 'kenney_impactMetal_light_001.opus', {}),
+    'chop':    (A + 'kenney_rpg_chop.opus', {}),
+    'plank':   (A + 'kenney_impactWood_light_002.opus', {}),   # off the end of the belt
+    'slam':    (A + 'kenney_impactPlank_medium_001.opus', {}),
+    'poof':    (A + 'fs208111_planman_poof_of_smoke.opus', {'max': 0.8}),
+    'sink':    (A + 'fs90143_pengo_au_steam_burst.opus', {'max': 0.9}),
+    'bump':    (A + 'kenney_impactMetal_medium_001.opus', {}),
 }
 
 RATE = 24000            # these cues live under 10 kHz; Opus takes 24 kHz input directly
@@ -84,25 +85,22 @@ XFADE = 0.08            # loop seam cross-fade, s
 LOOP_RMS = -20.0        # loops are levelled by RMS, dBFS
 
 
-def read_pcm16(path):
-    """16-bit PCM out of any RIFF/WAVE file - including WAVE_FORMAT_EXTENSIBLE,
-    which afconvert writes for some sources and the wave module refuses."""
-    b = open(path, 'rb').read()
-    i = 12
-    while i + 8 <= len(b):
-        cid, n = b[i:i + 4], int.from_bytes(b[i + 4:i + 8], 'little')
-        if cid == b'data':
-            return np.frombuffer(b[i + 8:i + 8 + n], np.int16).astype(np.float64) / 32768
-        i += 8 + n + (n & 1)
-    raise SystemExit(f'no audio data in {path}')
-
-
 def decode(path):
-    with tempfile.TemporaryDirectory() as tmp:
-        wav = os.path.join(tmp, 'x.wav')
-        subprocess.run(['afconvert', '-f', 'WAVE', '-d', 'LEI16@%d' % RATE, '-c', '1',
-                        os.path.join(ROOT, path), wav], check=True)
-        return read_pcm16(wav)
+    """A recording (Ogg Opus, or anything else ffmpeg reads) as mono float
+    PCM at RATE, -1..1."""
+    try:
+        import av
+    except ImportError:
+        raise SystemExit('PyAV is needed to decode the sources: python3 -m pip install --user av')
+    chunks = []
+    with av.open(os.path.join(ROOT, path)) as c:
+        rs = av.AudioResampler(format='s16', layout='mono', rate=RATE)
+        for fr in c.decode(audio=0):
+            chunks += [r.to_ndarray() for r in rs.resample(fr)]
+        chunks += [r.to_ndarray() for r in rs.resample(None)]
+    if not chunks:
+        raise SystemExit(f'no audio in {path}')
+    return np.concatenate(chunks, axis=1)[0].astype(np.float64) / 32768
 
 
 def trim(x, opt):
